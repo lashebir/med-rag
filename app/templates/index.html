@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ask the RAG</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 3rem auto; }
+    textarea, button { width: 100%; font-size: 1rem; padding: 0.5rem; }
+    button { margin-top: 0.5rem; }
+    #answer { white-space: pre-wrap; background:#f4f4f4; padding:1rem; margin-top:1rem; border-radius:8px;}
+  </style>
+</head>
+<body>
+  <h1>Ask the RAG</h1>
+  <textarea id="question" rows="4" placeholder="Type your question..."></textarea>
+  <button onclick="ask()">Ask</button>
+  <div id="answer"></div>
+
+  <script>
+    async function ask() {
+      const question = document.getElementById("question").value.trim();
+      if (!question) return;
+      document.getElementById("answer").innerText = "Thinking...";
+      const res = await fetch("/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question })
+      });
+      const data = await res.json();
+      document.getElementById("answer").innerText = data.answer || "(no answer)";
+    }
+  </script>
+</body>
+</html>
