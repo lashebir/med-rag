@@ -3,12 +3,16 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-import os, httpx, asyncio
-from app.pmc_ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
+import os, httpx, asyncio, json, textwrap
 from psycopg import connect
 from psycopg.rows import dict_row
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
 
+from app.pmc_resolve import resolve_pmcid
+from app.ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
+
+load_dotenv()
 app = FastAPI(title="PubMed RAG")
 
 templates = Jinja2Templates(directory="app/templates")
@@ -105,3 +109,63 @@ def query(body: QueryBody):
 
     # 4) (Your LLM call would go here, using the previews or hydrated chunks)
     return {"question": body.question, "results": results}
+
+
+@app.get("/ingest/pmcid/dryrun")
+async def ingest_pmcid_dryrun(pmcid: str):
+    if not pmcid.startswith("PMC"):
+        raise HTTPException(400, "pmcid must start with 'PMC' (e.g., PMC7096775)")
+
+    url = f"https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json/{pmcid}/unicode"
+    headers = {
+        "User-Agent": "med-rag/0.1 (contact: you@example.com)",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(url, headers=headers)
+
+    status = r.status_code
+    ctype = r.headers.get("content-type", "")
+    body = r.text
+    print(f"[dryrun] GET {url} -> {status} {ctype}", flush=True)
+
+    if status != 200:
+        snippet = textwrap.shorten(body.strip().replace("\n", " "), width=300)
+        raise HTTPException(status, f"PMC fetch failed ({status}). Body: {snippet}")
+
+    try:
+        j = r.json()
+    except Exception as e:
+        snippet = textwrap.shorten(body.strip().replace("\n", " "), width=300)
+        raise HTTPException(502, f"Non-JSON response. content-type='{ctype}'. Snippet: {snippet}")
+
+    # minimal shape-agnostic doc count
+    def extract_bioc_documents(x):
+        if isinstance(x, list): return x
+        if isinstance(x, dict):
+            if isinstance(x.get("documents"), list): return x["documents"]
+            coll = x.get("collection")
+            if isinstance(coll, dict) and isinstance(coll.get("documents"), list):
+                return coll["documents"]
+        return []
+
+    docs = extract_bioc_documents(j)
+    passages = 0
+    for d in docs:
+        ps = d.get("passages") or []
+        if isinstance(ps, list):
+            passages += len(ps)
+
+    return {"pmcid": pmcid, "documents": len(docs), "passages": passages}
+
+@app.post("/ingest/by_id")
+async def ingest_by_id(id: str):
+    print(f"→ /ingest/by_id id={id}", flush=True)
+    pmcid = await resolve_pmcid(id)
+    if not pmcid:
+        raise HTTPException(404, f"No PMC record found for '{id}' (likely not Open Access)")
+    n = await ingest_one_pmcid(pmcid)
+    if n == 0:
+        raise HTTPException(404, f"PMC record {pmcid} has no extractable text (BioC empty); try NXML fallback")
+    return {"pmcid": pmcid, "chunks": n}
