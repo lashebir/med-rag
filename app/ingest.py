@@ -10,14 +10,14 @@ from bs4  import BeautifulSoup
 import lxml
 
 load_dotenv()
-EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 CHUNK_TOKENS = int(os.getenv("CHUNK_TOKENS", "1200")) # 10/13 note: upped from 600 to 1200 to have fewer chunks, test up to 1800
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "90"))
 MAX_PASSAGES = int(os.getenv("MAX_PASSAGES", "8"))
 MAX_CHARS    = int(os.getenv("MAX_CHARS", "20000"))
 MAX_CHUNKS   = int(os.getenv("MAX_CHUNKS", "4"))
 EMBED_BATCH  = int(os.getenv("EMBED_BATCH_SIZE", "8"))
-HF_TOKEN = os.getenv("HF_TOKEN")
+HUGGINGFACE_HUB_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
 
 PG_KWARGS = dict(
     host=os.getenv("PGHOST", "localhost"),
@@ -31,7 +31,7 @@ _embedder = None
 def embedder():
     global _embedder
     if _embedder is None:
-        _embedder = SentenceTransformer(EMBED_MODEL)
+        _embedder = SentenceTransformer(EMBED_MODEL, token=HUGGINGFACE_HUB_TOKEN)
     return _embedder
 
 def to_vec_lit(vec):
@@ -74,7 +74,7 @@ def ensure_document(cur, ext_id: str, title: str, source_uri: str) -> int:
     cur.execute("""
         INSERT INTO documents (ext_id, title, source_uri)
         VALUES (%s, %s, %s)
-        ON CONFLICT (ext_id) DO UPDATE
+        ON CONFLICT ON CONSTRAINT documents_ext_id_key DO UPDATE
         SET title = COALESCE(EXCLUDED.title, documents.title),
             source_uri = COALESCE(EXCLUDED.source_uri, documents.source_uri)
         RETURNING doc_id;
@@ -187,10 +187,14 @@ async def ingest_one_pmcid(pmcid: str) -> int:
     print(f"🔹 Embedding shape: {embs.shape}", flush=True)
 
     # 5) Insert into DB
+    def normalize_uri(u: str) -> str:
+        u = (u or "").strip()
+        u = u.rstrip("/")  # remove trailing slash
+        return u.lower()
     print(f"🔹 Connecting to DB: {PG_KWARGS['dbname']}", flush=True)
-    with connect(**PG_KWARGS, row_factory=dict_row) as con, con.cursor() as cur:
+    with connect(**PG_KWARGS) as con, con.cursor() as cur:
         ext_id = f"pmcid://{pmcid}"
-        source_uri = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}"
+        source_uri = normalize_uri(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}")
         doc_id = ensure_document(cur, ext_id, title, source_uri)
         upsert_chunks(cur, doc_id, chunks, embs, pmcid)
         con.commit()

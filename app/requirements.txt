@@ -2,14 +2,12 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.8.0
 jinja2>=3.1.0
-sentence-transformers
 psycopg
 numpy
 beautifulsoup4
 pypdf
 httpx
 lxml
-  # python 3.11
-  # python -m pip install --upgrade pip setuptools wheel
-  # CPU/MPS build for macOS (works on M1/M2/M3)
-  # python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers
+huggingface_hub
+transformers

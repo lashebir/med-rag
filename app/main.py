@@ -110,7 +110,6 @@ def query(body: QueryBody):
     # 4) (Your LLM call would go here, using the previews or hydrated chunks)
     return {"question": body.question, "results": results}
 
-
 @app.get("/ingest/pmcid/dryrun")
 async def ingest_pmcid_dryrun(pmcid: str):
     if not pmcid.startswith("PMC"):
