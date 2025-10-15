@@ -8,12 +8,14 @@ from psycopg import connect
 from psycopg.rows import dict_row
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
+from app.qa_endpoint import router as qa_router
 
 from app.pmc_resolve import resolve_pmcid
-from app.ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
+from app.pmc_ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
 
 load_dotenv()
-app = FastAPI(title="PubMed RAG")
+app = FastAPI(title="Medical RAG")
+app.include_router(qa_router, prefix="/qa", tags=["qa"])
 
 templates = Jinja2Templates(directory="app/templates")
 

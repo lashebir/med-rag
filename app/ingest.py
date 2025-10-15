@@ -70,7 +70,7 @@ def passages_from_bioc(doc_json: Dict) -> List[str]:
                 texts.append(t)
     return texts
 
-def ensure_document(cur, ext_id: str, title: str, source_uri: str) -> int:
+def upsert_document(cur, ext_id: str, title: str, source_uri: str, source: str, year: str, institute: str) -> int:
     cur.execute("""
         INSERT INTO documents (ext_id, title, source_uri)
         VALUES (%s, %s, %s)
@@ -78,7 +78,7 @@ def ensure_document(cur, ext_id: str, title: str, source_uri: str) -> int:
         SET title = COALESCE(EXCLUDED.title, documents.title),
             source_uri = COALESCE(EXCLUDED.source_uri, documents.source_uri)
         RETURNING doc_id;
-    """, (ext_id, title, source_uri))
+    """, (ext_id, title, source_uri, source, year, institute))
     return cur.fetchone()[0]
 
 def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, pmcid: str):
@@ -195,7 +195,7 @@ async def ingest_one_pmcid(pmcid: str) -> int:
     with connect(**PG_KWARGS) as con, con.cursor() as cur:
         ext_id = f"pmcid://{pmcid}"
         source_uri = normalize_uri(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}")
-        doc_id = ensure_document(cur, ext_id, title, source_uri)
+        doc_id = upsert_document(cur, ext_id, title, source_uri)
         upsert_chunks(cur, doc_id, chunks, embs, pmcid)
         con.commit()
         print(f"✅ Inserted {len(chunks)} chunks for {pmcid}", flush=True)

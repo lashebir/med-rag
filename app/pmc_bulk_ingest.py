@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import httpx
 from psycopg import connect
 from psycopg.rows import dict_row
-from app.ingest import ingest_one_pmcid, PG_KWARGS
+from app.pmc_ingest import ingest_one_pmcid, PG_KWARGS
 
 load_dotenv()
 
@@ -14,7 +14,6 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 USER_AGENT = "med-rag/0.1 (contact: you@example.com)"  # set your email
 NCBI_DELAY = float(os.getenv("NCBI_DELAY_SEC", "0.4"))  # 3 req/sec without key
 RETMAX_DEFAULT = int(os.getenv("RETMAX", "50"))         # per topic cap
-
 API_KEY = os.getenv("NCBI_API_KEY")
 
 # ---- DB helpers (optional: skip already ingested PMCIDs) --------------------
