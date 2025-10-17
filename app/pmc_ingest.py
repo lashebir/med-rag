@@ -1,4 +1,4 @@
-import os, hashlib, json
+import os, hashlib, json, asyncio, random
 from typing import List, Dict, Optional, Tuple
 import httpx
 from sentence_transformers import SentenceTransformer
@@ -50,7 +50,13 @@ def chunk_by_tokens(text: str, max_tokens=600, overlap=90) -> List[str]:
         i += step
     return [c for c in out if c.strip()]
 
+USE_BIOC = os.getenv("USE_BIOC", "1") == "1"
+BIOC_MAX_RETRIES = int(os.getenv("BIOC_MAX_RETRIES", "2"))
+
 async def fetch_bioc_json(pmcid: str) -> Dict | None:
+    if not USE_BIOC:
+        return None
+
     url = f"https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json/{pmcid}/unicode"
     headers = {
         "User-Agent": "med-rag/0.1 (contact: you@example.com)",
@@ -59,47 +65,37 @@ async def fetch_bioc_json(pmcid: str) -> Dict | None:
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
     timeout = httpx.Timeout(30.0)
 
-    for attempt in range(5):
+    for attempt in range(BIOC_MAX_RETRIES):
         try:
             async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
                 r = await client.get(url, headers=headers)
+                ct = r.headers.get("content-type", "")
                 if r.status_code == 404:
                     return None
                 if 500 <= r.status_code < 600:
+                    # 5xx -> log and retry (will fall back to NXML if still bad)
+                    print(f"[BioC] {pmcid} {r.status_code} (attempt {attempt+1}/{BIOC_MAX_RETRIES})", flush=True)
                     raise httpx.HTTPStatusError("server error", request=r.request, response=r)
                 r.raise_for_status()
-
-                # ✅ Only parse if response looks like JSON
-                ctype = r.headers.get("content-type", "")
-                if "json" not in ctype.lower():
-                    print(f"[BioC] Non-JSON response for {pmcid}: {ctype}", flush=True)
+                if "json" not in ct.lower():
                     return None
-
                 try:
                     return r.json()
                 except Exception as e:
-                    print(f"[BioC] JSON parse failed for {pmcid}: {e}", flush=True)
+                    print(f"[BioC] JSON parse failed {pmcid}: {e}", flush=True)
                     return None
-
-        except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError) as e:
-            delay = min(1.5 * (2 ** attempt), 10.0)
-            print(f"[BioC] attempt {attempt+1}/5 for {pmcid} failed: {type(e).__name__} {e}. retrying in {delay:.1f}s", flush=True)
-            import asyncio, random
-            await asyncio.sleep(delay + random.random() * 0.5)
+        except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError):
+            delay = min(1.5 * (2 ** attempt), 8.0) + random.random()
+            await asyncio.sleep(delay)
+            continue
         except Exception as e:
-            print(f"[BioC] fatal error for {pmcid}: {e}", flush=True)
+            print(f"[BioC] fatal {pmcid}: {type(e).__name__}: {e}", flush=True)
             break
-
-    return None
+    return None  # triggers NXML fallback
 
 def passages_from_bioc(doc_json: Dict) -> List[str]:
-    """
-    Extract readable passages (title + sections) from BioC JSON.
-    BioC structure: collection -> documents[] -> passages[] with "text" and "infons"
-    """
-    texts = []
-    coll = doc_json.get("documents") or []
-    for d in coll:
+    texts: List[str] = []
+    for d in extract_bioc_documents(doc_json):
         for p in d.get("passages", []):
             t = (p.get("text") or "").strip()
             if t:
@@ -113,7 +109,7 @@ def upsert_document(
     title: Optional[str],
     source_uri: Optional[str],
     author: Optional[str],
-    year_date: Optional[str],     # 'YYYY-01-01' or None (or pass a datetime.date)
+    year_date: Optional[date],     # 'YYYY-01-01' or None (or pass a datetime.date)
     institute: Optional[str],
     source: Optional[str],
     source_id: Optional[str],
@@ -149,7 +145,7 @@ def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, pmcid: str):
     for idx, (txt, vec) in enumerate(zip(chunks, embs)):
         chash = hashlib.sha256(txt.encode("utf-8")).hexdigest()
         preview = txt[:500]  # store short preview only
-        meta = {
+        meta_chunks = {
             "pmcid": pmcid,
             "chunk_index": idx,
             "chunk_tokens": CHUNK_TOKENS,
@@ -157,7 +153,7 @@ def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, pmcid: str):
             "embedding_model": EMBED_MODEL
         }
         rows.append((
-            doc_id, idx, preview, json.dumps(meta), chash, to_vec_lit(vec), EMBED_MODEL
+            doc_id, idx, preview, json.dumps(meta_chunks), chash, to_vec_lit(vec), EMBED_MODEL
         ))
     cur.executemany("""
         INSERT INTO chunks (doc_id, chunk_index, text, metadata, content_hash, embedding, embedding_model)
@@ -205,6 +201,7 @@ def _dedup_join(items: List[str]) -> Optional[str]:
             seen.add(key)
             out.append(it.strip())
     return "; ".join(out) if out else None
+
 def extract_bioc_documents(j):
         """
         Return a list of BioC 'documents' regardless of whether the JSON is:
@@ -224,15 +221,10 @@ def extract_bioc_documents(j):
         return []
 
 def extract_meta_from_bioc(bioc: dict) -> Dict[str, Optional[str]]:
-    """
-    Try to pull title/year/institute from BioC JSON.
-    Returns {'title': str|None, 'year': 'YYYY'|None, 'institutes': 'A; B; C'|None}
-    """
     title = None
     year = None
     institutes: List[str] = []
 
-    # BioC can be: {"documents": [...]}, or {"collection":{"documents":[...]}}
     docs = []
     if isinstance(bioc, dict):
         if isinstance(bioc.get("documents"), list):
@@ -242,80 +234,71 @@ def extract_meta_from_bioc(bioc: dict) -> Dict[str, Optional[str]]:
     elif isinstance(bioc, list):
         docs = bioc
 
-    # Heuristics: look for passages with title-ish infons, and affiliations in infons/text
     for d in docs:
         for p in d.get("passages", []):
             inf = p.get("infons") or {}
             t = (p.get("text") or "").strip()
             itype = (inf.get("type") or "").lower()
 
-            # Title: passage type "title" / "article-title"
             if not title and (itype in {"title", "article-title"} or inf.get("section_type") == "TITLE"):
                 if t: title = t
 
-            # Year: many feeds don’t include; try date-like stuff
             if not year:
                 cand = inf.get("year") or inf.get("date") or ""
                 y = _pick_year(cand) or _pick_year(t)
                 if y: year = y
 
-            # Institutes: sometimes in affiliation passages/infons
             if itype in {"affiliation", "aff", "author-affiliation"} and t:
                 institutes.append(t)
+
+    # NEW: pull authors from BioC if present
+    authors = extract_authors_from_bioc(bioc)
 
     return {
         "title": title or None,
         "year": year or None,
         "institutes": _dedup_join(institutes),
-        }
+        "authors": authors or None,
+    }
 
 async def ingest_one_pmcid(pmcid: str) -> int:
     print(f"🔹 Starting ingestion for {pmcid}", flush=True)
 
-    # Fetch BioC (with retries) first
-    bioc = await fetch_bioc_json(pmcid)
-    nxml: Optional[str] = None
+    bioc = await fetch_bioc_json(pmcid)  # dict or None
+    nxml = None
+    passages_texts = []
+    meta_docs = {"title": None, "year": None, "institutes": None, "authors": None}
 
-    passages_texts: List[str] = []
-    meta: Dict[str, Optional[str]] = {"title": None, "year": None, "institutes": None, "authors": None}
-
-    # --- Try BioC path ---
     if bioc:
-        print(f"🔹 BioC available for {pmcid}", flush=True)
         docs = extract_bioc_documents(bioc)
         for d in docs[:MAX_PASSAGES]:
             for p in (d.get("passages") or []):
                 t = (p.get("text") or "").strip()
                 if t:
                     passages_texts.append(t)
-        # metadata from BioC (best effort)
         try:
             m_bioc = extract_meta_from_bioc(bioc)
             for k in ("title", "year", "institutes"):
                 if m_bioc.get(k):
-                    meta[k] = m_bioc[k]
+                    meta_docs[k] = m_bioc[k]
         except Exception as e:
             print(f"[BioC] meta parse warning: {e}", flush=True)
 
-    # --- Fallback to NXML if BioC missing/sparse ---
     if not passages_texts:
         print("⚠️ No passages via BioC — trying NXML fallback", flush=True)
         nxml = await fetch_pmc_nxml(pmcid)
         if not nxml:
             print("❌ NXML fetch failed", flush=True)
             return 0
-
         passages_texts = extract_text_from_nxml(nxml)
         if not passages_texts:
             print("❌ NXML parse produced no text", flush=True)
             return 0
-
         try:
             m_nxml = extract_meta_from_nxml(nxml)
-            # fill gaps including authors
             for k in ("title", "year", "institutes", "authors"):
-                if not meta.get(k) and m_nxml.get(k):
-                    meta[k] = m_nxml[k]
+                if not meta_docs.get(k) and m_nxml.get(k):
+                    meta_docs[k] = m_nxml[k]
         except Exception as e:
             print(f"[NXML] meta parse warning: {e}", flush=True)
 
@@ -346,7 +329,7 @@ async def ingest_one_pmcid(pmcid: str) -> int:
         u = (u or "").strip()
         return u.rstrip("/").lower()
 
-    year_date = date(int(meta["year"]), 1, 1) if meta.get("year") else None
+    year_date = date(int(meta_docs["year"]), 1, 1) if meta_docs.get("year") else None
 
     print(f"🔹 Connecting to DB: {PG_KWARGS['dbname']}", flush=True)
     with connect(**PG_KWARGS) as con, con.cursor() as cur:
@@ -355,11 +338,11 @@ async def ingest_one_pmcid(pmcid: str) -> int:
         doc_id = upsert_document(
             cur=cur,
             ext_id=ext_id,
-            title=meta.get("title"),
+            title=meta_docs.get("title"),
             source_uri=source_uri,
-            author=meta.get("authors"),
-            year_date=year_date,              # <-- pass DATE here
-            institute=meta.get("institutes"),
+            author=meta_docs.get("authors"),
+            year_date=year_date,              
+            institute=meta_docs.get("institutes"),
             source="PubMed Central",
             source_id=source_id,
         )
@@ -375,11 +358,12 @@ NXML_RE = re.compile(r'</?([^>]+)>')
 async def fetch_pmc_nxml(pmcid: str) -> str | None:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {"db": "pmc", "id": pmcid, "retmode": "xml"}
+    if os.getenv("NCBI_API_KEY"):
+        params["api_key"] = os.getenv("NCBI_API_KEY")
     headers = {"User-Agent": "med-rag/0.1 (contact: you@example.com)"}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, params=params, headers=headers)
-        print(f"[nxml] GET {r.url} -> {r.status_code} ct={r.headers.get('content-type')}", flush=True)
-        if r.status_code != 200:
+        if r.status_code != 200 or "xml" not in (r.headers.get("content-type","")).lower():
             return None
         return r.text
 
@@ -420,34 +404,97 @@ def extract_text_from_nxml(nxml: str) -> list[str]:
         seen.add(k)
         out.append(s)
     return out
+def _norm_author_string(s: str) -> list[str]:
+    # split on ; or , if records come as a single string
+    parts = [p.strip() for p in re.split(r"[;,\n]+", s) if p.strip()]
+    return parts
+
+def extract_authors_from_bioc(bioc: dict) -> Optional[str]:
+    """
+    Try to extract authors from BioC JSON.
+    Returns 'Given Surname; Given Surname; ...' or None.
+    BioC may store authors under document-level 'infons' (e.g., 'authors'),
+    or as passage infons (keys like 'author', 'authors', 'name', etc.).
+    """
+    authors: list[str] = []
+
+    def _maybe_collect(val):
+        if not val:
+            return
+        if isinstance(val, list):
+            for x in val:
+                if isinstance(x, str) and x.strip():
+                    authors.append(x.strip())
+        elif isinstance(val, str):
+            authors.extend(_norm_author_string(val))
+
+    docs = []
+    if isinstance(bioc, dict):
+        if isinstance(bioc.get("documents"), list):
+            docs = bioc["documents"]
+        elif isinstance(bioc.get("collection"), dict) and isinstance(bioc["collection"].get("documents"), list):
+            docs = bioc["collection"]["documents"]
+    elif isinstance(bioc, list):
+        docs = bioc
+
+    for d in docs:
+        # doc-level infons (sometimes 'authors' exists)
+        dinf = d.get("infons") or {}
+        for k in ("authors", "author", "creator", "contrib"):
+            _maybe_collect(dinf.get(k))
+
+        # passage-level infons
+        for p in d.get("passages", []):
+            inf = p.get("infons") or {}
+            # common-ish keys we’ve seen in the wild
+            for k in ("authors", "author", "name", "contrib", "contributor"):
+                _maybe_collect(inf.get(k))
+
+            # very rare: structured pieces
+            given = inf.get("given-names") or inf.get("firstname")
+            fam   = inf.get("surname") or inf.get("lastname")
+            if given or fam:
+                full = " ".join([str(given or "").strip(), str(fam or "").strip()]).strip()
+                if full:
+                    authors.append(full)
+
+    # dedup case-insensitively
+    seen, out = set(), []
+    for a in authors:
+        k = a.lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(a)
+
+    return "; ".join(out) if out else None
+
 def extract_authors_from_nxml(nxml: str) -> Optional[str]:
-    """
-    Extract semicolon-separated list of authors from NXML content.
-    """
+    """Return 'Given Surname; Given Surname; ...' or None."""
     if not nxml:
         return None
     soup = BeautifulSoup(nxml, "lxml-xml")
 
-    authors = []
+    authors: list[str] = []
     for contrib in soup.find_all("contrib", {"contrib-type": "author"}):
         name_tag = contrib.find("name")
         if name_tag:
-            surname = name_tag.findtext("surname", "").strip()
-            given = name_tag.findtext("given-names", "").strip()
+            surname_tag = name_tag.find("surname")
+            given_tag = name_tag.find("given-names")
+            surname = surname_tag.get_text(" ", strip=True) if surname_tag else ""
+            given = given_tag.get_text(" ", strip=True) if given_tag else ""
             full = " ".join([given, surname]).strip()
             if full:
                 authors.append(full)
         else:
-            # fallback: sometimes directly under contrib
             text = contrib.get_text(" ", strip=True)
             if text:
                 authors.append(text)
 
-    # Deduplicate and join
     seen, out = set(), []
     for a in authors:
-        if a.lower() not in seen:
-            seen.add(a.lower())
+        k = a.lower()
+        if k and k not in seen:
+            seen.add(k)
             out.append(a)
     return "; ".join(out) if out else None
 
@@ -489,9 +536,9 @@ def extract_meta_from_nxml(nxml: str) -> Dict[str, Optional[str]]:
             if s: insts.append(s)
 
     return {
-        "title": (title or None),
-        "year": (year or None),
+        "title": title or None,
+        "year": year or None,
         "institutes": _dedup_join(insts),
-        "authors" : authors or None
+        "authors" : authors or None,
     }
 

@@ -1,5 +1,4 @@
-import os
-import asyncio
+import os, asyncio, random
 import time
 from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
@@ -7,12 +6,14 @@ import httpx
 from psycopg import connect
 from psycopg.rows import dict_row
 from app.pmc_ingest import ingest_one_pmcid, PG_KWARGS
+import os, argparse, asyncio, random, sys
+from typing import List
 
 load_dotenv()
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 USER_AGENT = "med-rag/0.1 (contact: you@example.com)"  # set your email
-NCBI_DELAY = float(os.getenv("NCBI_DELAY_SEC", "0.4"))  # 3 req/sec without key
+NCBI_DELAY = float(os.getenv("NCBI_DELAY", "0.35"))  # 3 req/sec without key
 RETMAX_DEFAULT = int(os.getenv("RETMAX", "50"))         # per topic cap
 API_KEY = os.getenv("NCBI_API_KEY")
 
@@ -188,21 +189,82 @@ TOPICS = [
     '"dietary antioxidant" AND "hearing loss" AND ("open access"[filter])',
 ]
 
-async def main():
-    YEAR_RANGE = (os.getenv("YEAR_START", "2018"), os.getenv("YEAR_END", "2025"))
-    RETMAX = int(os.getenv("RETMAX", "40"))
-    CONC = int(os.getenv("MAX_CONCURRENCY", "3"))
+NCBI_DELAY = float(os.getenv("NCBI_DELAY", "0.35"))  # polite pacing
 
-    print(f"Bulk ingest over topics: {TOPICS}")
+async def ingest_many(pmcs: List[str], concurrency: int = 3):
+    sem = asyncio.Semaphore(concurrency)
+    results = {"ok": 0, "skipped": 0, "failed": []}
+
+    async def worker(pmcid: str):
+        async with sem:
+            try:
+                n = await ingest_one_pmcid(pmcid)
+                if n > 0:
+                    results["ok"] += 1
+                else:
+                    results["skipped"] += 1
+            except Exception as e:
+                print(f"[ingest] FAIL {pmcid}: {type(e).__name__}: {e}", flush=True)
+                results["failed"].append((pmcid, str(e)))
+            await asyncio.sleep(NCBI_DELAY + random.random() * 0.2)
+
+    await asyncio.gather(*(worker(p) for p in pmcs))
+    print(f"[ingest] done ok={results['ok']} skipped={results['skipped']} failed={len(results['failed'])}")
+    return results
+
+async def main():
+    parser = argparse.ArgumentParser(description="Bulk ingest PMC content")
+    mode = parser.add_mutually_exclusive_group(required=False)
+    mode.add_argument("--topics", action="store_true",
+                      help="Run topic-based ingestion using TOPICS and ingest_topic()")
+    mode.add_argument("--pmc", nargs="+",
+                      help="Explicit PMCIDs to ingest (e.g. --pmc PMC12345 PMC67890)")
+    mode.add_argument("--from-file",
+                      help="Path to a file with one PMCID per line")
+
+    parser.add_argument("--concurrency", type=int,
+                        default=int(os.getenv("MAX_CONCURRENCY", "3")))
+    parser.add_argument("--retmax", type=int,
+                        default=int(os.getenv("RETMAX", "40")))
+    parser.add_argument("--year-start", default=os.getenv("YEAR_START", "2018"))
+    parser.add_argument("--year-end", default=os.getenv("YEAR_END", "2025"))
+    parser.add_argument("--skip-existing", action="store_true", default=True)
+
+    args = parser.parse_args()
+
+    # ---- Mode: explicit PMCIDs (either --pmc or --from-file) ----
+    if args.pmc or args.from_file:
+        pmcs: List[str] = []
+        if args.pmc:
+            pmcs.extend(args.pmc)
+        if args.from_file:
+            with open(args.from_file) as fh:
+                pmcs.extend([ln.strip() for ln in fh if ln.strip()])
+        # normalize to “PMCxxxxxx”
+        pmcs = [p if p.upper().startswith("PMC") else f"PMC{p}" for p in pmcs]
+        print(f"[bulk] ingesting {len(pmcs)} PMCIDs with concurrency={args.concurrency}")
+        await ingest_many(pmcs, concurrency=args.concurrency)
+        return
+
+    # ---- Default/Topic mode ----
+    year_range = (args.year_start, args.year_end)
+    print(f"[topics] running over {len(TOPICS)} topics, retmax={args.retmax}, years={year_range}, conc={args.concurrency}")
     grand = {"found": 0, "ingested": 0, "skipped": 0, "errors": 0}
     for t in TOPICS:
         summary = await ingest_topic(
-            t, retmax=RETMAX, date_range=YEAR_RANGE, max_concurrency=CONC, skip_existing=True
+            t,
+            retmax=args.retmax,
+            date_range=year_range,
+            max_concurrency=args.concurrency,
+            skip_existing=args.skip_existing,
         )
         print(f"[summary] {t}: {summary}", flush=True)
         for k in grand:
-            grand[k] += summary[k]
+            grand[k] += summary.get(k, 0)
     print(f"\n[grand total] {grand}", flush=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
