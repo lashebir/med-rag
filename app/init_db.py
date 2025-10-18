@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS documents (
   year DATE,
   journal TEXT,
   institute TEXT,
+  source TEXT,
+  source_id TEXT,
   tags TEXT[],
   captured_at TIMESTAMPTZ DEFAULT now()
 );

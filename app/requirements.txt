@@ -11,3 +11,6 @@ lxml
 sentence-transformers
 huggingface_hub
 transformers
+psycopg
+python-dotenv
+PyPDF2
