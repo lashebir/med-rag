@@ -120,73 +120,74 @@ async def ingest_topic(
 
 # ---- Entry point: define your topic set here --------------------------------
 TOPICS = [
-    # Round 1
-    "cochlear synaptopathy",
-    "noise-induced hearing loss",
-    "tinnitus pathophysiology",
-    "single-cell RNA-seq cochlea",
-    "hair cell regeneration",
-    # Round 2
-    "hidden hearing loss",
-    "hearing loss",
-    "tinnitus",
-    "otitis media",
-    "otitis externa",
-    "otitis media with effusion",
-    "otitis media with retraction",
-    "otitis media with retraction",
-    "noise-induced hearing loss",
-    "auditory brainstem response",
-    "spiral ganglion neurons",
-    "age-related hearing loss",
-    "presbycusis",
-    # --- Cellular and Molecular ---
-    '("cochlear synaptic repair" OR "synapse regeneration") AND cochlea AND ("open access"[filter])',
-    '"mitochondrial dysfunction" AND cochlea AND ("open access"[filter])',
-    '"oxidative stress" AND ("hearing loss" OR cochlea) AND ("open access"[filter])',
-    '"apoptosis" AND ("hair cell" OR cochlea) AND ("open access"[filter])',
-    '"inflammatory cytokines" AND "hearing loss" AND ("open access"[filter])',
-    '("blood-labyrinth barrier" OR "inner ear barrier permeability") AND ("open access"[filter])',
-    '"epigenetic regulation" AND cochlea AND ("open access"[filter])',
-    '"microRNA" AND ("cochlea" OR "hearing loss") AND ("open access"[filter])',
+    # Round 4
+    '"auditory thalamus" AND plasticity AND ("open access"[filter])',
+    '"auditory cortex" AND "synaptic reorganization" AND ("open access"[filter])',
+    '"cross-modal plasticity" AND ("deafness" OR "hearing loss") AND ("open access"[filter])',
+    '"cortical reorganization" AND "sensory deprivation" AND ("open access"[filter])',
+    '"somatosensory input" AND "auditory perception" AND ("open access"[filter])',
+    '"visual-auditory integration" AND tinnitus AND ("open access"[filter])',
+    '"functional connectivity" AND "auditory network" AND ("open access"[filter])',
+    '"GABAergic inhibition" AND "auditory cortex" AND ("open access"[filter])',
 
-    # --- Central Auditory and Plasticity ---
-    '"auditory cortex plasticity" AND "hearing loss" AND ("open access"[filter])',
-    '"cochlear nucleus" AND "synaptic transmission" AND ("open access"[filter])',
-    '"inferior colliculus" AND "plasticity" AND "hearing loss" AND ("open access"[filter])',
-    '"central auditory hyperactivity" AND "tinnitus" AND ("open access"[filter])',
-    '"temporal processing" AND "hearing loss" AND ("open access"[filter])',
-    '"speech in noise perception" AND "hidden hearing loss" AND ("open access"[filter])',
+    # Round 5
+    '"hearing loss" AND "Alzheimer\'s disease" AND ("open access"[filter])',
+    '"hearing loss" AND "Parkinson\'s disease" AND ("open access"[filter])',
+    '"hearing loss" AND "cognitive load" AND ("open access"[filter])',
+    '"auditory working memory" AND aging AND ("open access"[filter])',
+    '"default mode network" AND auditory AND ("open access"[filter])',
+    '"functional MRI" AND "auditory cognition" AND ("open access"[filter])',
+    '"brainstem auditory pathway" AND neurodegeneration AND ("open access"[filter])',
+    '"white matter microstructure" AND "auditory processing" AND ("open access"[filter])',
 
-    # --- Genetics and Regeneration ---
-    '"gene therapy" AND ("hearing loss" OR "cochlea") AND ("open access"[filter])',
-    '"Atoh1" AND "hair cell regeneration" AND ("open access"[filter])',
-    '"Notch signaling" AND "cochlear regeneration" AND ("open access"[filter])',
-    '"Wnt signaling" AND "inner ear" AND ("open access"[filter])',
-    '"stem cell" AND "otic progenitors" AND ("open access"[filter])',
-    '"Lgr5" AND "supporting cell" AND "cochlea" AND ("open access"[filter])',
-    '("cochlear organoids" OR "inner ear organoids") AND ("open access"[filter])',
+    # Round 6
+    '"computational modeling" AND "auditory pathway" AND ("open access"[filter])',
+    '"neural encoding" AND "auditory cortex" AND ("open access"[filter])',
+    '"deep learning" AND "auditory neuroscience" AND ("open access"[filter])',
+    '"spiking neural networks" AND hearing AND ("open access"[filter])',
+    '"temporal coding" AND auditory AND ("open access"[filter])',
+    '"information theory" AND "auditory system" AND ("open access"[filter])',
+    '"Bayesian models" AND "speech perception" AND ("open access"[filter])',
+    '"predictive coding" AND "auditory cortex" AND ("open access"[filter])',
+    '"neural decoding" AND "auditory evoked potentials" AND ("open access"[filter])',
+    '"biophysical models" AND "hair cell" AND ("open access"[filter])',
 
-    # --- Clinical and Translational ---
-    '"cochlear implant outcomes" AND "speech perception" AND ("open access"[filter])',
-    '"hearing aid" AND "auditory plasticity" AND ("open access"[filter])',
-    '"ototoxicity prevention" AND ("aminoglycoside" OR "cisplatin") AND ("open access"[filter])',
-    '"auditory neuropathy" AND "ABR" AND ("open access"[filter])',
-    '"hidden hearing loss" AND "humans" AND ("open access"[filter])',
-    '"hearing loss" AND "cognitive decline" AND ("open access"[filter])',
+    # Round 7
+    '"neuroinflammation" AND "auditory system" AND ("open access"[filter])',
+    '"microglia" AND "auditory cortex" AND ("open access"[filter])',
+    '"blood-brain barrier" AND "hearing loss" AND ("open access"[filter])',
+    '"systemic inflammation" AND "hearing loss" AND ("open access"[filter])',
+    '"metabolic syndrome" AND "hearing loss" AND ("open access"[filter])',
+    '"vascular dysfunction" AND cochlea AND ("open access"[filter])',
+    '"mitochondrial dynamics" AND "auditory neurons" AND ("open access"[filter])'
 
-    # --- Advanced Methods and Models ---
-    '"single-cell RNA-seq" AND ("inner ear" OR cochlea) AND ("open access"[filter])',
-    '"spatial transcriptomics" AND "auditory" AND ("open access"[filter])',
-    '"machine learning" AND ("otology" OR "hearing loss") AND ("open access"[filter])',
-    '"electrophysiology" AND "spiral ganglion" AND ("open access"[filter])',
-    '"functional MRI" AND "auditory cortex" AND ("open access"[filter])',
+    # Round 8
+     '"cochlear implant" AND "neural encoding" AND ("open access"[filter])',
+    '"cochlear implant" AND "brain plasticity" AND ("open access"[filter])',
+    '"auditory brainstem implant" AND "speech perception" AND ("open access"[filter])',
+    '"electrical stimulation" AND "auditory pathway" AND ("open access"[filter])',
+    '"neuroprosthetics" AND "hearing restoration" AND ("open access"[filter])',
 
-    # --- Aging and Environmental ---
-    '"aging cochlea" AND transcriptome AND ("open access"[filter])',
-    '"metabolic stress" AND "presbycusis" AND ("open access"[filter])',
-    '"noise exposure" AND "cochlear synaptopathy" AND ("open access"[filter])',
-    '"dietary antioxidant" AND "hearing loss" AND ("open access"[filter])',
+    # --- Brain–Computer Interfaces and Decoding ---
+    '"brain-computer interface" AND "auditory" AND ("open access"[filter])',
+    '"EEG decoding" AND "speech perception" AND ("open access"[filter])',
+    '"neural decoding" AND "speech intelligibility" AND ("open access"[filter])',
+    '"MEG" AND "auditory attention decoding" AND ("open access"[filter])',
+    '"auditory attention" AND "neural tracking" AND ("open access"[filter])',
+
+    # --- Computational and Systems Neuroengineering ---
+    '"computational modeling" AND "auditory prosthesis" AND ("open access"[filter])',
+    '"biophysical modeling" AND "auditory stimulation" AND ("open access"[filter])',
+    '"neural interface" AND "temporal coding" AND ("open access"[filter])',
+    '"deep learning" AND "auditory decoding" AND ("open access"[filter])',
+    '"closed-loop" AND "auditory feedback" AND ("open access"[filter])',
+
+    # --- Translational and Future-Oriented Topics ---
+    '"machine learning" AND "cochlear implant outcomes" AND ("open access"[filter])',
+    '"adaptive stimulation" AND "auditory implant" AND ("open access"[filter])',
+    '"real-time neural decoding" AND "auditory cortex" AND ("open access"[filter])',
+    '"brain connectivity" AND "auditory prosthesis" AND ("open access"[filter])',
+    '"BCI" AND "speech comprehension" AND ("open access"[filter])'
 ]
 
 NCBI_DELAY = float(os.getenv("NCBI_DELAY", "0.35"))  # polite pacing

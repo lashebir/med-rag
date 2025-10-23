@@ -86,6 +86,62 @@ ROUND_3 = [
     "dietary antioxidant hearing loss",
 ]
 
+ROUND_4_8 = [
+    # --- Cognitive and Neurodegenerative ---
+    "hearing loss Alzheimer's disease",
+    "hearing loss Parkinson's disease",
+    "hearing loss cognitive load",
+    "auditory working memory aging",
+    "default mode network auditory",
+    "functional MRI auditory cognition",
+    "brainstem auditory pathway neurodegeneration",
+    "white matter microstructure auditory processing",
+
+    # --- Computational and Theoretical Neuroscience ---
+    "computational modeling auditory pathway",
+    "neural encoding auditory cortex",
+    "deep learning auditory neuroscience",
+    "spiking neural networks hearing",
+    "temporal coding auditory system",
+    "information theory auditory",
+    "Bayesian models speech perception",
+    "predictive coding auditory cortex",
+    "neural decoding auditory evoked potentials",
+    "biophysical models hair cell",
+
+    # --- Neuroinflammation and Metabolism ---
+    "neuroinflammation auditory system",
+    "microglia auditory cortex",
+    "blood-brain barrier hearing loss",
+    "systemic inflammation hearing loss",
+    "metabolic syndrome hearing loss",
+    "vascular dysfunction cochlea",
+    "mitochondrial dynamics auditory neurons",
+
+    # --- Neural Prosthetics and BCIs ---
+    "cochlear implant neural encoding",
+    "cochlear implant brain plasticity",
+    "auditory brainstem implant speech perception",
+    "electrical stimulation auditory pathway",
+    "neuroprosthetics hearing restoration",
+    "brain computer interface auditory",
+    "EEG decoding speech perception",
+    "neural decoding speech intelligibility",
+    "MEG auditory attention decoding",
+    "auditory attention neural tracking",
+    "computational modeling auditory prosthesis",
+    "biophysical modeling auditory stimulation",
+    "neural interface temporal coding",
+    "deep learning auditory decoding",
+    "closed loop auditory feedback",
+    "machine learning cochlear implant outcomes",
+    "adaptive stimulation auditory implant",
+    "real time neural decoding auditory cortex",
+    "brain connectivity auditory prosthesis",
+    "BCI speech comprehension"
+]
+
+
 async def ingest_query(search_query: str, limit: int = 200, page_size: int = 100) -> dict:
     """
     Search arXiv by query string and ingest results.
@@ -218,7 +274,8 @@ async def _run_round(name: str, topics: List[str]):
 async def polite_ingest_arxiv_all():
     # await _run_round("Round 1", ROUND_1)
     # await _run_round("Round 2", ROUND_2)
-    await _run_round("Round 3 (biomed queries normalized for arXiv)", ROUND_3)
+    # await _run_round("Round 3 (biomed queries normalized for arXiv)", ROUND_3)
+    await _run_round("Rounds 4-8", ROUND_4_8)
 
 async def main():
     p = argparse.ArgumentParser("Bulk arXiv ingestion")

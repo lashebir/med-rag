@@ -7,8 +7,9 @@ from psycopg.rows import dict_row
 from dotenv import load_dotenv
 import re
 from bs4  import BeautifulSoup
-import lxml
+# import lxml
 from datetime import date
+from packaging import version
 
 load_dotenv()
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
@@ -29,11 +30,23 @@ PG_KWARGS = dict(
     password=os.getenv("PGPASSWORD") or None,
 )
 
+if CHUNK_OVERLAP >= CHUNK_TOKENS:
+    raise ValueError("CHUNK_OVERLAP must be < CHUNK_TOKENS")
+
 _embedder = None
 def embedder():
     global _embedder
     if _embedder is None:
-        _embedder = SentenceTransformer(EMBED_MODEL, token=HUGGINGFACE_HUB_TOKEN)
+        kw = {}
+        try:
+            # prefer the modern kwarg if available
+            if "use_auth_token" in SentenceTransformer.__init__.__code__.co_varnames:
+                kw["use_auth_token"] = HUGGINGFACE_HUB_TOKEN
+            else:
+                kw["token"] = HUGGINGFACE_HUB_TOKEN
+        except Exception:
+            kw["use_auth_token"] = HUGGINGFACE_HUB_TOKEN
+        _embedder = SentenceTransformer(EMBED_MODEL, **kw)
     return _embedder
 
 def to_vec_lit(vec):
@@ -51,6 +64,227 @@ def chunk_by_tokens(text: str, max_tokens=600, overlap=90) -> List[str]:
         i += step
     return [c for c in out if c.strip()]
 
+# ---------- Format-aware splitting helpers ----------
+
+_SENT_SPLIT_RE = re.compile(r'(?<=[\.\?\!])\s+(?=[A-Z0-9(])')  # crude, fast sentence splitter
+
+def _sentences(text: str) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    # keep linebreaks as spaces to avoid creating micro-sentences
+    text = re.sub(r'\s*\n+\s*', ' ', text)
+    # split on punctuation + space + capital/digit/"("
+    sents = [s.strip() for s in _SENT_SPLIT_RE.split(text) if s.strip()]
+    return sents if sents else [text]
+
+def _tok_count(s: str) -> int:
+    # same rough tokenization you already use
+    return len(s.split())
+
+def _trim_blocks_to_max_chars(blocks: list[tuple[str, str]], max_chars: int) -> list[tuple[str, str]]:
+    total = 0
+    out = []
+    for kind, text in blocks:
+        if total >= max_chars:
+            break
+        remain = max_chars - total
+        if remain <= 0:
+            break
+        take = text[:remain]
+        if take:
+            out.append((kind, take))
+            total += len(take)
+        if len(take) < len(text):
+            break
+    return out
+
+def gather_blocks_from_bioc(bioc: dict, max_passages: int | None = None) -> list[tuple[str, str]]:
+    """
+    Returns a list of (kind, text) blocks.
+    kind ∈ {'title','heading','para','bullet','other'}
+    """
+    blocks: list[tuple[str, str]] = []
+    docs = extract_bioc_documents(bioc)
+    if max_passages is None:
+        max_passages = 10**9
+    count = 0
+
+    for d in docs:
+        for p in (d.get("passages") or []):
+            t = (p.get("text") or "").strip()
+            if not t:
+                continue
+            inf = p.get("infons") or {}
+            ptype = (inf.get("type") or inf.get("section_type") or "").lower()
+
+            if ptype in {"title", "article-title"}:
+                kind = "title"
+            elif ptype in {"section", "sec", "heading"}:
+                kind = "heading"
+            elif ptype in {"affiliation", "author-affiliation"}:
+                # usually metadata; skip from content chunks
+                continue
+            else:
+                # treat everything else textual as a paragraph
+                kind = "para"
+
+            blocks.append((kind, t))
+            count += 1
+            if count >= max_passages:
+                break
+        if count >= max_passages:
+            break
+    return blocks
+
+def gather_blocks_from_nxml(nxml: str) -> list[tuple[str, str]]:
+    """
+    Produce (kind, text) blocks from PMC NXML:
+      - article-title -> 'title'
+      - sec/title     -> 'heading'
+      - p              -> 'para'
+      - list/list-item -> 'bullet'
+    """
+    blocks: list[tuple[str, str]] = []
+    soup = BeautifulSoup(nxml, "lxml-xml")
+
+    # Article title
+    at = soup.find("article-title")
+    if at:
+        txt = at.get_text(" ", strip=True)
+        if txt:
+            blocks.append(("title", txt))
+
+    # Walk sections in order; add headings, then their paragraphs & lists
+    for sec in soup.find_all("sec"):
+        st = sec.find("title")
+        if st:
+            s = st.get_text(" ", strip=True)
+            if s:
+                blocks.append(("heading", s))
+
+        # paragraphs directly under sec (avoid re-adding nested sec paragraphs twice)
+        for p in sec.find_all("p", recursive=False):
+            s = p.get_text(" ", strip=True)
+            if s:
+                blocks.append(("para", s))
+
+        # lists
+        for li in sec.find_all("list"):
+            for item in li.find_all("list-item", recursive=False):
+                s = item.get_text(" ", strip=True)
+                if s:
+                    blocks.append(("bullet", s))
+
+    # Fallback: top-level paragraphs not inside <sec>
+    for p in soup.find_all("p"):
+        parent_names = {a.name for a in p.parents if getattr(a, "name", None)}
+        # if already inside a <sec>, it was handled above; keep only non-sec leftovers
+        if "sec" not in parent_names:
+            s = p.get_text(" ", strip=True)
+            if s:
+                blocks.append(("para", s))
+
+    return blocks
+
+def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens: int) -> list[str]:
+    """
+    Build chunks by concatenating whole blocks (title, heading, para, bullet).
+    - We NEVER split across blocks unless a single block > max_tokens.
+    - If a block > max_tokens: split that block by sentence to fit.
+    - Overlap is applied in SENTENCES from the *previous* chunk tail.
+    """
+    chunks: list[str] = []
+    cur_sents: list[str] = []      # sentence buffer for current chunk
+    cur_tokens = 0
+    overlap_sents_last_chunk: list[str] = []  # the tail-sentences we’ll carry into next chunk
+
+    def flush_chunk():
+        nonlocal cur_sents, cur_tokens, overlap_sents_last_chunk
+        if not cur_sents:
+            return
+        text = "\n".join(cur_sents).strip()
+        if text:
+            chunks.append(text)
+        # compute overlap seed as sentence tail >= overlap_tokens
+        toks = 0
+        tail = []
+        for s in reversed(cur_sents):
+            toks += _tok_count(s)
+            tail.append(s)
+            if toks >= overlap_tokens:
+                break
+        overlap_sents_last_chunk = list(reversed(tail))
+        # reset buffer
+        cur_sents = []
+        cur_tokens = 0
+
+    for kind, text in blocks:
+        sents = _sentences(text)
+        # naive estimate for the whole block
+        block_tokens = sum(_tok_count(s) for s in sents)
+
+        # If the whole block fits, try to add as a unit
+        if block_tokens <= max_tokens:
+            if cur_tokens + block_tokens <= max_tokens:
+                # append block
+                if kind in {"title", "heading"} and cur_sents:
+                    # add a visual separator before a new heading inside a chunk
+                    cur_sents.append("")  # blank line
+                cur_sents.extend(sents)
+                cur_tokens += block_tokens
+            else:
+                # flush current chunk and start a new chunk with overlap + this block
+                flush_chunk()
+                # start with overlap sentences (from previous chunk) if any
+                if overlap_sents_last_chunk:
+                    # Only add if they won't dominate the budget
+                    ov_tokens = sum(_tok_count(s) for s in overlap_sents_last_chunk)
+                    if ov_tokens < max_tokens // 2:
+                        cur_sents.extend(overlap_sents_last_chunk)
+                        cur_tokens += ov_tokens
+                # now add the block (it fits by definition)
+                cur_sents.extend(sents)
+                cur_tokens += block_tokens
+
+        else:
+            # Block is larger than budget: split by sentences
+            # First, finish current chunk (so a giant block starts clean)
+            flush_chunk()
+
+            buf: list[str] = []
+            btoks = 0
+            for s in sents:
+                stoks = _tok_count(s)
+                if btoks + stoks <= max_tokens:
+                    buf.append(s)
+                    btoks += stoks
+                else:
+                    # flush sub-chunk
+                    if buf:
+                        chunks.append("\n".join(buf).strip())
+                    # seed overlap for sub-chunk series (tail of buf)
+                    toks = 0
+                    tail = []
+                    for ts in reversed(buf):
+                        toks += _tok_count(ts)
+                        tail.append(ts)
+                        if toks >= overlap_tokens:
+                            break
+                    # next sub-chunk starts with tail + current sentence
+                    buf = list(reversed(tail))
+                    btoks = sum(_tok_count(ts) for ts in buf)
+                    buf.append(s)
+                    btoks += stoks
+            if buf:
+                chunks.append("\n".join(buf).strip())
+            # after a giant block, clear overlap (avoid re-adding too much)
+            overlap_sents_last_chunk = []
+
+    # flush remainder
+    flush_chunk()
+    return [c for c in chunks if c.strip()]
+
 USE_BIOC = os.getenv("USE_BIOC", "1") == "1"
 BIOC_MAX_RETRIES = int(os.getenv("BIOC_MAX_RETRIES", "2"))
 
@@ -60,7 +294,7 @@ async def fetch_bioc_json(pmcid: str) -> Dict | None:
 
     url = f"https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json/{pmcid}/unicode"
     headers = {
-        "User-Agent": f"med-rag/0.1 (contact: {EMAIL})",
+        f"User-Agent": "med-rag/0.1 (contact: {EMAIL})",
         "Accept": "application/json",
     }
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
@@ -266,35 +500,29 @@ async def ingest_one_pmcid(pmcid: str) -> int:
     print(f"🔹 Starting ingestion for {pmcid}", flush=True)
 
     bioc = await fetch_bioc_json(pmcid)  # dict or None
-    nxml = None
-    passages_texts = []
     meta_docs = {"title": None, "year": None, "institutes": None, "authors": None}
 
+    # 1) Try BioC first (metadata + blocks)
+    blocks: list[tuple[str, str]] = []
     if bioc:
-        docs = extract_bioc_documents(bioc)
-        for d in docs[:MAX_PASSAGES]:
-            for p in (d.get("passages") or []):
-                t = (p.get("text") or "").strip()
-                if t:
-                    passages_texts.append(t)
         try:
             m_bioc = extract_meta_from_bioc(bioc)
-            for k in ("title", "year", "institutes"):
+            for k in ("title", "year", "institutes", "authors"):
                 if m_bioc.get(k):
                     meta_docs[k] = m_bioc[k]
         except Exception as e:
             print(f"[BioC] meta parse warning: {e}", flush=True)
 
-    if not passages_texts:
-        print("⚠️ No passages via BioC — trying NXML fallback", flush=True)
+        blocks = gather_blocks_from_bioc(bioc, max_passages=MAX_PASSAGES)
+
+    # 2) Fallback to NXML if no blocks from BioC
+    if not blocks:
+        print("⚠️ No usable blocks from BioC — trying NXML fallback", flush=True)
         nxml = await fetch_pmc_nxml(pmcid)
         if not nxml:
             print("❌ NXML fetch failed", flush=True)
             return 0
-        passages_texts = extract_text_from_nxml(nxml)
-        if not passages_texts:
-            print("❌ NXML parse produced no text", flush=True)
-            return 0
+
         try:
             m_nxml = extract_meta_from_nxml(nxml)
             for k in ("title", "year", "institutes", "authors"):
@@ -303,14 +531,18 @@ async def ingest_one_pmcid(pmcid: str) -> int:
         except Exception as e:
             print(f"[NXML] meta parse warning: {e}", flush=True)
 
-    # --- Prepare text ---
-    full_text = "\n\n".join(passages_texts)
-    if len(full_text) > MAX_CHARS:
-        full_text = full_text[:MAX_CHARS]
-    print(f"🔹 Collected {len(passages_texts)} passages ({len(full_text)} chars)", flush=True)
+        blocks = gather_blocks_from_nxml(nxml)
 
-    # --- Chunk ---
-    raw_chunks = chunk_by_tokens(full_text, CHUNK_TOKENS, CHUNK_OVERLAP)
+    # 3) Cap by MAX_CHARS for either path
+    blocks = _trim_blocks_to_max_chars(blocks, MAX_CHARS)
+    if not blocks:
+        print("❌ Parsing produced no text blocks", flush=True)
+        return 0
+
+    print(f"🔹 Collected {len(blocks)} structural blocks (≤ {MAX_CHARS} chars)", flush=True)
+
+    # --- Prepare text ---
+    raw_chunks = chunk_blocks(blocks, CHUNK_TOKENS, CHUNK_OVERLAP)
     if MAX_CHUNKS:
         raw_chunks = raw_chunks[:MAX_CHUNKS]
     source_id = pmcid  # do not use variable name 'id'
@@ -354,8 +586,6 @@ async def ingest_one_pmcid(pmcid: str) -> int:
     print(f"✨ Done ingesting {pmcid}", flush=True)
     return len(chunks)
 
-NXML_RE = re.compile(r'</?([^>]+)>')
-
 async def fetch_pmc_nxml(pmcid: str) -> str | None:
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
     params = {"db": "pmc", "id": pmcid, "retmode": "xml"}
@@ -368,43 +598,6 @@ async def fetch_pmc_nxml(pmcid: str) -> str | None:
             return None
         return r.text
 
-def extract_text_from_nxml(nxml: str) -> list[str]:
-    if not nxml:
-        return []
-    try:
-        soup = BeautifulSoup(nxml, "lxml-xml")  # needs lxml
-    except Exception as e:
-        print(f"[nxml] Parser error: {type(e).__name__}: {e}", flush=True)
-        return []
-
-    texts = []
-
-    # Titles
-    for t in soup.find_all(["article-title", "title"]):
-        s = (t.get_text(" ", strip=True) or "").strip()
-        if s: texts.append(s)
-
-    # Paragraphs
-    for p in soup.find_all("p"):
-        s = (p.get_text(" ", strip=True) or "").strip()
-        if s: texts.append(s)
-
-    # Section titles (optional)
-    for sec in soup.find_all("sec"):
-        tt = sec.find("title")
-        if tt:
-            s = (tt.get_text(" ", strip=True) or "").strip()
-            if s: texts.append(s)
-
-    # simple de-dup
-    out, seen = [], set()
-    for s in texts:
-        k = s[:80]
-        if k in seen: 
-            continue
-        seen.add(k)
-        out.append(s)
-    return out
 def _norm_author_string(s: str) -> list[str]:
     # split on ; or , if records come as a single string
     parts = [p.strip() for p in re.split(r"[;,\n]+", s) if p.strip()]
