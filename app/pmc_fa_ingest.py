@@ -21,6 +21,7 @@ MAX_CHUNKS   = int(os.getenv("MAX_CHUNKS", "4"))
 EMBED_BATCH  = int(os.getenv("EMBED_BATCH_SIZE", "8"))
 HUGGINGFACE_HUB_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
 EMAIL = os.getenv("EMAIL", "you@example.com")
+FORCE_UPDATE = os.getenv("FORCE_UPDATE", "0") == "1"
 
 PG_KWARGS = dict(
     host=os.getenv("PGHOST", "localhost"),
@@ -63,6 +64,57 @@ def chunk_by_tokens(text: str, max_tokens=600, overlap=90) -> List[str]:
         out.append(" ".join(toks[i:i+max_tokens]))
         i += step
     return [c for c in out if c.strip()]
+
+def needs_update(con, pmcid: str) -> bool:
+    with con.cursor() as cur:
+        # 1) document present?
+        cur.execute("""
+            SELECT d.doc_id
+            FROM documents d
+            WHERE d.source = 'PubMed Central' AND d.source_id = %s
+            """, (pmcid,))
+        row = cur.fetchone()
+        if not row:
+            return True  # not in DB → ingest
+
+        doc_id = row[0]
+
+        # 2) do we have chunks for this model?
+        cur.execute("""
+            SELECT 1
+            FROM chunks
+            WHERE doc_id = %s AND embedding_model = %s
+            LIMIT 1
+            """, (doc_id, EMBED_MODEL))
+        has_model_chunks = cur.fetchone() is not None
+
+        if FORCE_UPDATE:
+            return True
+        return not has_model_chunks
+
+def log_skip_reason(con, pmcid: str):
+    with con.cursor() as cur:
+        cur.execute("""
+          SELECT d.doc_id FROM documents d
+          WHERE d.source='PubMed Central' AND d.source_id=%s
+        """, (pmcid,))
+        row = cur.fetchone()
+        if not row:
+            print(f"[plan] {pmcid}: skipped? (unexpected) doc not found but planner flagged as present")
+            return
+        doc_id = row[0]
+        cur.execute("""
+          SELECT embedding_model, COUNT(*) 
+          FROM chunks
+          WHERE doc_id=%s
+          GROUP BY embedding_model
+        """, (doc_id,))
+        rows = cur.fetchall()
+        if not rows:
+            print(f"[plan] {pmcid}: doc exists but has 0 chunks")
+        else:
+            models = ", ".join(f"{m} x{n}" for m,n in rows)
+            print(f"[plan] {pmcid}: chunks exist → {models}; current model={EMBED_MODEL}")
 
 # ---------- Format-aware splitting helpers ----------
 
@@ -294,9 +346,10 @@ async def fetch_bioc_json(pmcid: str) -> Dict | None:
 
     url = f"https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json/{pmcid}/unicode"
     headers = {
-        f"User-Agent": "med-rag/0.1 (contact: {EMAIL})",
-        "Accept": "application/json",
+    "User-Agent": f"med-rag/0.1 (contact: {EMAIL})",
+    "Accept": "application/json",
     }
+
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
     timeout = httpx.Timeout(30.0)
 
@@ -390,6 +443,7 @@ def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, pmcid: str):
         rows.append((
             doc_id, idx, preview, json.dumps(meta_chunks), chash, to_vec_lit(vec), EMBED_MODEL
         ))
+
     cur.executemany("""
         INSERT INTO chunks (doc_id, chunk_index, text, metadata, content_hash, embedding, embedding_model)
         VALUES (%s, %s, %s, %s, %s, %s::vector, %s)
@@ -566,6 +620,7 @@ async def ingest_one_pmcid(pmcid: str) -> int:
 
     print(f"🔹 Connecting to DB: {PG_KWARGS['dbname']}", flush=True)
     with connect(**PG_KWARGS) as con, con.cursor() as cur:
+        
         ext_id = f"pmcid://{pmcid}"
         source_uri = normalize_uri(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}")
         doc_id = upsert_document(
@@ -579,6 +634,16 @@ async def ingest_one_pmcid(pmcid: str) -> int:
             source="PubMed Central",
             source_id=source_id,
         )
+        
+        if os.getenv("PURGE_OLD_CHUNKS", "0") == "1":
+            cur.execute("SELECT 1 FROM documents WHERE doc_id = %s FOR UPDATE;", (doc_id,))
+            cur.execute(
+                "DELETE FROM chunks WHERE doc_id = %s AND embedding_model = %s;",
+                (doc_id, EMBED_MODEL),
+            )
+            con.commit()
+            print(f"✅ Purged old chunks for {pmcid}", flush=True)
+        
         upsert_chunks(cur=cur, doc_id=doc_id, chunks=chunks, embs=embs, pmcid=pmcid)
         con.commit()
         print(f"✅ Inserted {len(chunks)} chunks for {pmcid}", flush=True)
