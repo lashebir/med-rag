@@ -1,4 +1,3 @@
-# arxiv_ingest.py
 import os, re, asyncio, random, hashlib
 from typing import List, Dict, Optional, Tuple
 from datetime import date, datetime

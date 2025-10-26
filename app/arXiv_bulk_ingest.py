@@ -1,7 +1,8 @@
 import os, sys, argparse, asyncio, random, re
 from typing import List, Dict
 
-from app.arXiv_ingest import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
+# from app.arXiv_ingest import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
+from app.arXiv_fa_ingest import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
 
 ARXIV_DELAY = float(os.getenv("ARXIV_DELAY", "0.25"))
 MAX_RESULTS = int(os.getenv("ARXIV_MAX_RESULTS", "100"))
@@ -11,7 +12,6 @@ PAUSE_BETWEEN_ROUNDS = (20.0, 30.0) # seconds
 ARXIV_MIN_SLEEP = 3.5               # per-request sleep used inside ingest_arxiv_topic (pass through)
 RETMAX_PER_TOPIC = 80               # adjust to taste
 
-# Topics for ingestion (matching what was done in the pubmed_bulk_ingest.py file)
 ROUND_1 = [
     "cochlear synaptopathy",
     "noise-induced hearing loss",
@@ -259,9 +259,7 @@ async def _run_round(name: str, topics: List[str]):
                 # to remain polite; we pass it down so it can obey.
                 summary: Dict[str, int] = await ingest_arxiv_topic(
                     q,
-                    retmax=RETMAX_PER_TOPIC,
-                    min_request_sleep=ARXIV_MIN_SLEEP,
-                    # you can pass extra kwargs your ingestor supports (e.g., start, categories, etc.)
+                    retmax=RETMAX_PER_TOPIC
                 )
                 print(f"✅ {topic}: {summary}")
             except Exception as e:
@@ -272,9 +270,9 @@ async def _run_round(name: str, topics: List[str]):
     await asyncio.sleep(random.uniform(*PAUSE_BETWEEN_ROUNDS))
 
 async def polite_ingest_arxiv_all():
-    # await _run_round("Round 1", ROUND_1)
-    # await _run_round("Round 2", ROUND_2)
-    # await _run_round("Round 3 (biomed queries normalized for arXiv)", ROUND_3)
+    await _run_round("Round 1", ROUND_1)
+    await _run_round("Round 2", ROUND_2)
+    await _run_round("Round 3 (biomed queries normalized for arXiv)", ROUND_3)
     await _run_round("Rounds 4-8", ROUND_4_8)
 
 async def main():
