@@ -2,7 +2,7 @@ import os, sys, argparse, asyncio, random, re
 from typing import List, Dict
 
 # from app.arXiv_ingest import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
-from app.arXiv_fa_ingest import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
+from app.arXiv_fa_ingest_fixed import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
 
 ARXIV_DELAY = float(os.getenv("ARXIV_DELAY", "0.25"))
 MAX_RESULTS = int(os.getenv("ARXIV_MAX_RESULTS", "100"))
@@ -184,7 +184,7 @@ async def ingest_query(search_query: str, limit: int = 200, page_size: int = 100
         async def worker(aid: str):
             async with sem:
                 try:
-                    n = await ingest_one_arxiv_id(aid)
+                    n = await ingest_one_arxiv_id(aid, search_query=search_query)
                     return ("ok", n)
                 except Exception as e:
                     print(f"[arXiv] FAIL {aid}: {type(e).__name__}: {e}")
