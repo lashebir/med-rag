@@ -85,35 +85,50 @@ def parse_citations(text: str) -> List[Dict[str, Any]]:
 
 # --- DB retrieval ---
 def retrieve_top_k(question: str, k: int = TOP_K) -> List[Dict[str, Any]]:
+    """
+    Retrieve top-k chunks using semantic similarity (cosine distance with IVFFlat index).
+    IMPORTANT: Pass query vector as literal parameter to enable IVFFlat index usage.
+    """
     qvec = embedder().encode([question], normalize_embeddings=True)[0]
     qlit = to_vec_lit(qvec)
 
+    # Use cosine distance (<=>) to match our IVFFlat indexes
+    # Pass vector as literal parameter (not CTE) to enable index usage
     sql = """
-    WITH q AS (SELECT %s::vector AS v)
     SELECT d.ext_id, d.title, d.source_uri, d.source, c.chunk_index, c.text,
-           (c.embedding <-> q.v) AS distance
-    FROM q, chunks c
+           (c.embedding <=> %s::vector) AS distance,
+           (1 - (c.embedding <=> %s::vector)) AS similarity
+    FROM chunks c
     JOIN documents d USING (doc_id)
     WHERE c.embedding_model = %s
-    ORDER BY c.embedding <-> q.v
+    ORDER BY c.embedding <=> %s::vector
     LIMIT %s;
     """
     rows: List[Dict[str, Any]] = []
     with connect(**PG_KWARGS, row_factory=dict_row) as con, con.cursor() as cur:
-        cur.execute(sql, (qlit, EMBED_MODEL, k))
+        # Pass vector literal 3 times (for distance calc, similarity calc, and ORDER BY)
+        cur.execute(sql, (qlit, qlit, EMBED_MODEL, qlit, k))
         rows = cur.fetchall()
 
     contexts = []
     for r in rows:
-        # ext_id should be like "pmcid://PMCxxxxxx"
-        pmcid = (r["ext_id"].split("pmcid://", 1)[-1]).upper() if r.get("ext_id") else "PMC?"
+        # Handle different ext_id formats: "pmcid://PMCxxxxxx" or "arxiv://arxiv_id"
+        ext_id = r.get("ext_id", "")
+        if "pmcid://" in ext_id:
+            doc_id = ext_id.split("pmcid://", 1)[-1].upper()
+        elif "arxiv://" in ext_id:
+            doc_id = ext_id.split("arxiv://", 1)[-1]
+        else:
+            doc_id = ext_id or "UNKNOWN"
+
         contexts.append({
-            "pmcid": pmcid,
+            "pmcid": doc_id,  # Keep as "pmcid" for backward compatibility, but may be arxiv_id
             "chunk_index": r["chunk_index"],
             "text": r["text"],
             "title": r["title"],
             "source_uri": r["source_uri"],
             "distance": float(r["distance"]),
+            "similarity": float(r["similarity"]),
         })
     return contexts
 
