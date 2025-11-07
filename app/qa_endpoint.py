@@ -1,7 +1,6 @@
 # app/qa_endpoint.py
 import os
 import re
-import json
 import requests
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException
@@ -50,7 +49,7 @@ def build_system_prompt() -> str:
 
 def build_user_prompt(question: str, contexts: List[Dict[str, Any]]) -> str:
     ctx = []
-    for i, c in enumerate(contexts):
+    for c in contexts:
         label = f"{c['pmcid']}#{c['chunk_index']}"
         ctx.append(f"[{label}] {c['text']}")
     ctx_block = "\n\n".join(ctx)
@@ -84,30 +83,98 @@ def parse_citations(text: str) -> List[Dict[str, Any]]:
     return out
 
 # --- DB retrieval ---
-def retrieve_top_k(question: str, k: int = TOP_K) -> List[Dict[str, Any]]:
+def build_metadata_filter_sql(filters: Optional['MetadataFilters']) -> tuple[str, List[Any]]:
+    """
+    Build SQL WHERE clauses and parameters for metadata filtering.
+    Returns (where_clause, params_list)
+    """
+    if not filters:
+        return "", []
+
+    conditions = []
+    params = []
+
+    # Filter by authors (TEXT[] array - case-insensitive partial match)
+    if filters.authors:
+        author_conditions = []
+        for author_name in filters.authors:
+            author_conditions.append(
+                "EXISTS (SELECT 1 FROM unnest(d.author) AS a WHERE LOWER(a) LIKE LOWER(%s))"
+            )
+            params.append(f"%{author_name}%")
+        # Match any of the specified authors
+        if author_conditions:
+            conditions.append(f"({' OR '.join(author_conditions)})")
+
+    # Filter by year range
+    if filters.year_min is not None:
+        conditions.append("EXTRACT(YEAR FROM d.year) >= %s")
+        params.append(filters.year_min)
+
+    if filters.year_max is not None:
+        conditions.append("EXTRACT(YEAR FROM d.year) <= %s")
+        params.append(filters.year_max)
+
+    # Filter by institutions (case-insensitive partial match)
+    if filters.institutions:
+        inst_conditions = []
+        for inst in filters.institutions:
+            inst_conditions.append("LOWER(d.institute) LIKE LOWER(%s)")
+            params.append(f"%{inst}%")
+        # Match any of the specified institutions
+        if inst_conditions:
+            conditions.append(f"({' OR '.join(inst_conditions)})")
+
+    # Filter by sources (exact match, case-insensitive)
+    if filters.sources:
+        conditions.append("d.source = ANY(%s)")
+        params.append(filters.sources)
+
+    where_clause = " AND ".join(conditions) if conditions else ""
+    return where_clause, params
+
+def retrieve_top_k(question: str, k: int = TOP_K, filters: Optional['MetadataFilters'] = None) -> List[Dict[str, Any]]:
     """
     Retrieve top-k chunks using semantic similarity (cosine distance with IVFFlat index).
+    Metadata filters are applied BEFORE semantic search for efficiency.
+
     IMPORTANT: Pass query vector as literal parameter to enable IVFFlat index usage.
     """
     qvec = embedder().encode([question], normalize_embeddings=True)[0]
     qlit = to_vec_lit(qvec)
 
+    # Build metadata filter WHERE clause
+    filter_where, filter_params = build_metadata_filter_sql(filters)
+
+    # Base WHERE clause for embedding model
+    base_where = "c.embedding_model = %s"
+
+    # Combine WHERE clauses
+    if filter_where:
+        where_clause = f"WHERE {base_where} AND {filter_where}"
+    else:
+        where_clause = f"WHERE {base_where}"
+
     # Use cosine distance (<=>) to match our IVFFlat indexes
     # Pass vector as literal parameter (not CTE) to enable index usage
-    sql = """
-    SELECT d.ext_id, d.title, d.source_uri, d.source, c.chunk_index, c.text,
+    sql = f"""
+    SELECT d.ext_id, d.title, d.source_uri, d.source, d.author, d.year, d.institute,
+           c.chunk_index, c.text,
            (c.embedding <=> %s::vector) AS distance,
            (1 - (c.embedding <=> %s::vector)) AS similarity
     FROM chunks c
     JOIN documents d USING (doc_id)
-    WHERE c.embedding_model = %s
+    {where_clause}
     ORDER BY c.embedding <=> %s::vector
     LIMIT %s;
     """
+
+    # Combine all parameters: vector (3 times), embedding_model, filter_params, limit
+    params = [qlit, qlit, EMBED_MODEL] + filter_params + [qlit, k]
+
     rows: List[Dict[str, Any]] = []
     with connect(**PG_KWARGS, row_factory=dict_row) as con, con.cursor() as cur:
-        # Pass vector literal 3 times (for distance calc, similarity calc, and ORDER BY)
-        cur.execute(sql, (qlit, qlit, EMBED_MODEL, qlit, k))
+        cur.execute(sql, params)
         rows = cur.fetchall()
 
     contexts = []
@@ -118,8 +185,18 @@ def retrieve_top_k(question: str, k: int = TOP_K) -> List[Dict[str, Any]]:
             doc_id = ext_id.split("pmcid://", 1)[-1].upper()
         elif "arxiv://" in ext_id:
             doc_id = ext_id.split("arxiv://", 1)[-1]
+        elif "scholar://" in ext_id:
+            doc_id = ext_id.split("scholar://", 1)[-1]
         else:
             doc_id = ext_id or "UNKNOWN"
+
+        # Extract year from date field if present
+        year = None
+        if r.get("year"):
+            try:
+                year = r["year"].year if hasattr(r["year"], "year") else int(r["year"])
+            except:
+                pass
 
         contexts.append({
             "pmcid": doc_id,  # Keep as "pmcid" for backward compatibility, but may be arxiv_id
@@ -127,6 +204,10 @@ def retrieve_top_k(question: str, k: int = TOP_K) -> List[Dict[str, Any]]:
             "text": r["text"],
             "title": r["title"],
             "source_uri": r["source_uri"],
+            "source": r.get("source"),
+            "authors": r.get("author"),  # List of authors
+            "year": year,
+            "institution": r.get("institute"),
             "distance": float(r["distance"]),
             "similarity": float(r["similarity"]),
         })
@@ -152,9 +233,40 @@ def call_ollama(prompt: str) -> str:
         raise HTTPException(status_code=502, detail=f"Ollama error: {e}")
 
 # --- FastAPI shapes ---
+class MetadataFilters(BaseModel):
+    """Optional metadata filters applied BEFORE semantic search."""
+    authors: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by author names (case-insensitive partial match). Documents must have at least one matching author."
+    )
+    year_min: Optional[int] = Field(
+        default=None,
+        ge=1900,
+        le=2100,
+        description="Minimum publication year (inclusive)"
+    )
+    year_max: Optional[int] = Field(
+        default=None,
+        ge=1900,
+        le=2100,
+        description="Maximum publication year (inclusive)"
+    )
+    institutions: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by institution names (case-insensitive partial match)"
+    )
+    sources: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by source: arXiv, PubMed Central, Google Scholar"
+    )
+
 class QARequest(BaseModel):
     question: str = Field(..., description="User question")
     top_k: Optional[int] = Field(default=TOP_K, ge=1, le=15)
+    filters: Optional[MetadataFilters] = Field(
+        default=None,
+        description="Optional metadata filters applied before semantic search"
+    )
 
 class Citation(BaseModel):
     pmcid: str
@@ -171,10 +283,37 @@ router = APIRouter()
 
 @router.post("/answer", response_model=QAResponse)
 def answer(req: QARequest):
-    # 1) retrieve
-    contexts = retrieve_top_k(req.question, k=req.top_k or TOP_K)
+    """
+    Answer a question using RAG with optional metadata filtering.
+
+    Filters are applied BEFORE semantic search:
+    - Filter by author(s), year range, institution(s), or source(s)
+    - Then find top-k most relevant chunks from filtered documents
+    - Generate answer with citations
+
+    Example with filters:
+    ```json
+    {
+        "question": "What are the latest treatments for diabetes?",
+        "top_k": 5,
+        "filters": {
+            "authors": ["Smith"],
+            "year_min": 2020,
+            "sources": ["PubMed Central"]
+        }
+    }
+    ```
+    """
+    # 1) retrieve with metadata filters
+    contexts = retrieve_top_k(req.question, k=req.top_k or TOP_K, filters=req.filters)
     if not contexts:
-        raise HTTPException(status_code=404, detail="No relevant contexts found")
+        if req.filters:
+            raise HTTPException(
+                status_code=404,
+                detail="No relevant contexts found matching the specified filters. Try relaxing the filter criteria."
+            )
+        else:
+            raise HTTPException(status_code=404, detail="No relevant contexts found")
 
     # 2) build prompt
     system = build_system_prompt()
@@ -214,3 +353,109 @@ def answer(req: QARequest):
         }]
 
     return QAResponse(answer=completion, citations=citations, used_contexts=contexts)
+
+@router.get("/filters/available")
+def get_available_filters():
+    """
+    Get available metadata filter values from the database.
+    Useful for building UI dropdowns or understanding the data.
+
+    Returns:
+    - sources: List of available data sources
+    - year_range: Min and max publication years
+    - document_count: Total number of documents
+    - top_authors: Most frequent authors (top 20)
+    - top_institutions: Most frequent institutions (top 20)
+    """
+    with connect(**PG_KWARGS, row_factory=dict_row) as con, con.cursor() as cur:
+        # Get available sources
+        cur.execute("""
+            SELECT DISTINCT source
+            FROM documents
+            WHERE source IS NOT NULL
+            ORDER BY source;
+        """)
+        sources = [row["source"] for row in cur.fetchall()]
+
+        # Get year range
+        cur.execute("""
+            SELECT
+                MIN(EXTRACT(YEAR FROM year)) as min_year,
+                MAX(EXTRACT(YEAR FROM year)) as max_year
+            FROM documents
+            WHERE year IS NOT NULL;
+        """)
+        year_data = cur.fetchone()
+        year_range = {
+            "min": int(year_data["min_year"]) if year_data["min_year"] else None,
+            "max": int(year_data["max_year"]) if year_data["max_year"] else None,
+        }
+
+        # Get document count
+        cur.execute("SELECT COUNT(*) as count FROM documents;")
+        doc_count = cur.fetchone()["count"]
+
+        # Get top authors (unnest the array and count occurrences)
+        cur.execute("""
+            SELECT author_name, COUNT(*) as doc_count
+            FROM documents, unnest(author) AS author_name
+            WHERE author IS NOT NULL
+            GROUP BY author_name
+            ORDER BY doc_count DESC, author_name
+            LIMIT 20;
+        """)
+        top_authors = [
+            {"name": row["author_name"], "document_count": row["doc_count"]}
+            for row in cur.fetchall()
+        ]
+
+        # Get top institutions
+        cur.execute("""
+            SELECT institute, COUNT(*) as doc_count
+            FROM documents
+            WHERE institute IS NOT NULL AND institute != ''
+            GROUP BY institute
+            ORDER BY doc_count DESC
+            LIMIT 20;
+        """)
+        top_institutions = [
+            {"name": row["institute"], "document_count": row["doc_count"]}
+            for row in cur.fetchall()
+        ]
+
+    return {
+        "sources": sources,
+        "year_range": year_range,
+        "document_count": doc_count,
+        "top_authors": top_authors,
+        "top_institutions": top_institutions,
+        "usage_examples": [
+            {
+                "description": "Filter by author",
+                "filters": {
+                    "authors": ["Smith"]
+                }
+            },
+            {
+                "description": "Filter by recent papers (2020-2024)",
+                "filters": {
+                    "year_min": 2020,
+                    "year_max": 2024
+                }
+            },
+            {
+                "description": "Filter by source",
+                "filters": {
+                    "sources": ["PubMed Central"]
+                }
+            },
+            {
+                "description": "Combined filters",
+                "filters": {
+                    "authors": ["Johnson"],
+                    "year_min": 2018,
+                    "sources": ["arXiv", "PubMed Central"]
+                }
+            }
+        ]
+    }

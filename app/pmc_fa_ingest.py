@@ -11,6 +11,10 @@ from bs4  import BeautifulSoup
 from datetime import date
 from packaging import version
 
+# NER extraction
+from app.ner_extractor import extract_entities_from_chunks, embed_mentions, deduplicate_mentions
+from app.ner_db_utils import upsert_mentions
+
 load_dotenv()
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 CHUNK_TOKENS = int(os.getenv("CHUNK_TOKENS", "1200")) # 10/13 note: upped from 600 to 1200 to have fewer chunks, test up to 1800
@@ -22,6 +26,7 @@ EMBED_BATCH  = int(os.getenv("EMBED_BATCH_SIZE", "8"))
 HUGGINGFACE_HUB_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
 EMAIL = os.getenv("EMAIL", "you@example.com")
 FORCE_UPDATE = os.getenv("FORCE_UPDATE", "0") == "1"
+ENABLE_NER = os.getenv("ENABLE_NER", "1") == "1"  # Enable NER extraction by default
 
 PG_KWARGS = dict(
     host=os.getenv("PGHOST", "localhost"),
@@ -239,17 +244,23 @@ def gather_blocks_from_nxml(nxml: str) -> list[tuple[str, str]]:
 
     return blocks
 
-def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens: int) -> list[str]:
+def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens: int) -> list[tuple[str, str]]:
     """
     Build chunks by concatenating whole blocks (title, heading, para, bullet).
     - We NEVER split across blocks unless a single block > max_tokens.
     - If a block > max_tokens: split that block by sentence to fit.
     - Overlap is applied in SENTENCES from the *previous* chunk tail.
+
+    Returns:
+        List of (chunk_text, section_name) tuples where section_name is the heading
+        under which the chunk content appears.
     """
-    chunks: list[str] = []
+    chunks: list[tuple[str, str]] = []  # (chunk_text, section_name)
     cur_sents: list[str] = []      # sentence buffer for current chunk
     cur_tokens = 0
-    overlap_sents_last_chunk: list[str] = []  # the tail-sentences we’ll carry into next chunk
+    cur_section_name: str = "Section 1"  # Track current section name
+    section_counter = 1
+    overlap_sents_last_chunk: list[str] = []  # the tail-sentences we'll carry into next chunk
 
     def flush_chunk():
         nonlocal cur_sents, cur_tokens, overlap_sents_last_chunk
@@ -257,7 +268,7 @@ def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens:
             return
         text = "\n".join(cur_sents).strip()
         if text:
-            chunks.append(text)
+            chunks.append((text, cur_section_name))
         # compute overlap seed as sentence tail >= overlap_tokens
         toks = 0
         tail = []
@@ -272,6 +283,14 @@ def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens:
         cur_tokens = 0
 
     for kind, text in blocks:
+        # Update section name when we hit a heading
+        if kind == "heading":
+            # Use the actual heading text as section name
+            cur_section_name = text.strip()[:100]  # Limit length
+            if not cur_section_name:
+                section_counter += 1
+                cur_section_name = f"Section {section_counter}"
+
         sents = _sentences(text)
         # naive estimate for the whole block
         block_tokens = sum(_tok_count(s) for s in sents)
@@ -314,7 +333,7 @@ def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens:
                 else:
                     # flush sub-chunk
                     if buf:
-                        chunks.append("\n".join(buf).strip())
+                        chunks.append(("\n".join(buf).strip(), cur_section_name))
                     # seed overlap for sub-chunk series (tail of buf)
                     toks = 0
                     tail = []
@@ -329,13 +348,13 @@ def chunk_blocks(blocks: list[tuple[str, str]], max_tokens: int, overlap_tokens:
                     buf.append(s)
                     btoks += stoks
             if buf:
-                chunks.append("\n".join(buf).strip())
+                chunks.append(("\n".join(buf).strip(), cur_section_name))
             # after a giant block, clear overlap (avoid re-adding too much)
             overlap_sents_last_chunk = []
 
     # flush remainder
     flush_chunk()
-    return [c for c in chunks if c.strip()]
+    return [(text, section) for text, section in chunks if text.strip()]
 
 USE_BIOC = os.getenv("USE_BIOC", "1") == "1"
 BIOC_MAX_RETRIES = int(os.getenv("BIOC_MAX_RETRIES", "2"))
@@ -396,7 +415,7 @@ def upsert_document(
     ext_id: str,
     title: Optional[str],
     source_uri: Optional[str],
-    author: Optional[str],
+    author: Optional[List[str]],
     year_date: Optional[date],     # 'YYYY-01-01' or None (or pass a datetime.date)
     institute: Optional[str],
     source: Optional[str],
@@ -428,9 +447,10 @@ def upsert_document(
     row = cur.fetchone()
     return row[0]
 
-def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, pmcid: str):
+def upsert_chunks(cur, doc_id: int, chunks: List[Tuple[str, str]], embs, pmcid: str):
+    """Upsert chunks with section names."""
     rows = []
-    for idx, (txt, vec) in enumerate(zip(chunks, embs)):
+    for idx, ((txt, section_name), vec) in enumerate(zip(chunks, embs)):
         chash = hashlib.sha256(txt.encode("utf-8")).hexdigest()
         preview = txt[:500]  # store short preview only
         meta_chunks = {
@@ -438,21 +458,23 @@ def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, pmcid: str):
             "chunk_index": idx,
             "chunk_tokens": CHUNK_TOKENS,
             "chunk_overlap": CHUNK_OVERLAP,
-            "embedding_model": EMBED_MODEL
+            "embedding_model": EMBED_MODEL,
+            "section_name": section_name,
         }
         rows.append((
-            doc_id, idx, preview, json.dumps(meta_chunks), chash, to_vec_lit(vec), EMBED_MODEL
+            doc_id, idx, preview, json.dumps(meta_chunks), chash, to_vec_lit(vec), EMBED_MODEL, section_name
         ))
 
     cur.executemany("""
-        INSERT INTO chunks (doc_id, chunk_index, text, metadata, content_hash, embedding, embedding_model)
-        VALUES (%s, %s, %s, %s, %s, %s::vector, %s)
+        INSERT INTO chunks (doc_id, chunk_index, text, metadata, content_hash, embedding, embedding_model, section_name)
+        VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s)
         ON CONFLICT (doc_id, chunk_index) DO UPDATE SET
           text = EXCLUDED.text,
           metadata = EXCLUDED.metadata,
           content_hash = EXCLUDED.content_hash,
           embedding = EXCLUDED.embedding,
-          embedding_model = EXCLUDED.embedding_model;
+          embedding_model = EXCLUDED.embedding_model,
+          section_name = EXCLUDED.section_name;
     """, rows)
 
 def _pick_year(text: str) -> Optional[str]:
@@ -595,20 +617,25 @@ async def ingest_one_pmcid(pmcid: str) -> int:
 
     print(f"🔹 Collected {len(blocks)} structural blocks (≤ {MAX_CHARS} chars)", flush=True)
 
-    # --- Prepare text ---
+    # --- Prepare text (section-aware chunking) ---
+    print(f"🔹 Using section-aware chunking (preserves document structure)", flush=True)
     raw_chunks = chunk_blocks(blocks, CHUNK_TOKENS, CHUNK_OVERLAP)
     if MAX_CHUNKS:
         raw_chunks = raw_chunks[:MAX_CHUNKS]
     source_id = pmcid  # do not use variable name 'id'
-    chunks = [f"{source_id}\n\n{c}" for c in raw_chunks]
-    print(f"🔹 Created {len(chunks)} chunks (cap={MAX_CHUNKS})", flush=True)
+
+    # raw_chunks is now List[Tuple[str, str]] = [(chunk_text, section_name), ...]
+    chunks = [(f"{source_id}\n\n{chunk_text}", section_name) for chunk_text, section_name in raw_chunks]
+
+    print(f"🔹 Created {len(chunks)} section-aware chunks (cap={MAX_CHUNKS})", flush=True)
     if not chunks:
         print("⚠️ No chunks after splitting", flush=True)
         return 0
 
     # --- Embed ---
     print(f"🔹 Encoding with {EMBED_MODEL} (batch={EMBED_BATCH})", flush=True)
-    embs = embedder().encode(chunks, normalize_embeddings=True, batch_size=EMBED_BATCH)
+    chunk_texts = [chunk_text for chunk_text, _ in chunks]
+    embs = embedder().encode(chunk_texts, normalize_embeddings=True, batch_size=EMBED_BATCH)
     print(f"🔹 Embedding shape: {embs.shape}", flush=True)
 
     # --- Upsert document + chunks ---
@@ -648,6 +675,37 @@ async def ingest_one_pmcid(pmcid: str) -> int:
         con.commit()
         print(f"✅ Inserted {len(chunks)} chunks for {pmcid}", flush=True)
 
+        # NER extraction (optional)
+        if ENABLE_NER:
+            print(f"🔹 Extracting named entities from chunks...", flush=True)
+            try:
+                # Extract mentions from chunks
+                mentions = extract_entities_from_chunks(chunks)
+                mentions = deduplicate_mentions(mentions)
+                print(f"🔹 Found {len(mentions)} unique mentions", flush=True)
+
+                if mentions:
+                    # Generate embeddings for mentions
+                    mention_embeddings = embed_mentions(mentions)
+                    print(f"🔹 Generated embeddings for {len(mention_embeddings)} mentions", flush=True)
+
+                    # Upsert mentions and embeddings
+                    num_inserted = upsert_mentions(cur, doc_id, mentions, mention_embeddings)
+                    con.commit()
+                    print(f"✅ Inserted {num_inserted} mentions for {pmcid}", flush=True)
+
+                    # Print stats by label
+                    label_counts = {}
+                    for m in mentions:
+                        label = m['label']
+                        label_counts[label] = label_counts.get(label, 0) + 1
+                    print(f"   Mentions by type: {label_counts}", flush=True)
+                else:
+                    print(f"   No mentions extracted", flush=True)
+            except Exception as e:
+                print(f"⚠️ NER extraction failed: {e}", flush=True)
+                # Continue without NER - don't fail the ingestion
+
     print(f"✨ Done ingesting {pmcid}", flush=True)
     return len(chunks)
 
@@ -668,10 +726,10 @@ def _norm_author_string(s: str) -> list[str]:
     parts = [p.strip() for p in re.split(r"[;,\n]+", s) if p.strip()]
     return parts
 
-def extract_authors_from_bioc(bioc: dict) -> Optional[str]:
+def extract_authors_from_bioc(bioc: dict) -> Optional[list[str]]:
     """
     Try to extract authors from BioC JSON.
-    Returns 'Given Surname; Given Surname; ...' or None.
+    Returns list of author names or None.
     BioC may store authors under document-level 'infons' (e.g., 'authors'),
     or as passage infons (keys like 'author', 'authors', 'name', etc.).
     """
@@ -725,10 +783,10 @@ def extract_authors_from_bioc(bioc: dict) -> Optional[str]:
             seen.add(k)
             out.append(a)
 
-    return "; ".join(out) if out else None
+    return out if out else None
 
-def extract_authors_from_nxml(nxml: str) -> Optional[str]:
-    """Return 'Given Surname; Given Surname; ...' or None."""
+def extract_authors_from_nxml(nxml: str) -> Optional[list[str]]:
+    """Return list of author names or None."""
     if not nxml:
         return None
     soup = BeautifulSoup(nxml, "lxml-xml")
@@ -755,7 +813,7 @@ def extract_authors_from_nxml(nxml: str) -> Optional[str]:
         if k and k not in seen:
             seen.add(k)
             out.append(a)
-    return "; ".join(out) if out else None
+    return out if out else None
 
 def extract_meta_from_nxml(nxml: str) -> Dict[str, Optional[str]]:
     """

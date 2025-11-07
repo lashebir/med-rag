@@ -12,6 +12,13 @@ import numpy as np
 from packaging import version
 import sentence_transformers
 
+# Section-aware chunking
+from app.section_chunker import chunk_text_by_sections
+
+# NER extraction
+from app.ner_extractor import extract_entities_from_chunks, embed_mentions, deduplicate_mentions
+from app.ner_db_utils import upsert_mentions
+
 # ---------- Config / ENV ----------
 from dotenv import load_dotenv
 load_dotenv()
@@ -27,6 +34,7 @@ HUGGINGFACE_HUB_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKE
 FORCE_UPDATE        = os.getenv("FORCE_UPDATE", "0") == "1"
 PURGE_OLD_CHUNKS    = os.getenv("PURGE_OLD_CHUNKS", "0") == "1"
 LOG_SKIP_REASON     = os.getenv("LOG_SKIP_REASON", "0") == "1"
+ENABLE_NER          = os.getenv("ENABLE_NER", "1") == "1"  # Enable NER extraction by default
 
 ARXIV_FETCH_PDF = os.getenv("ARXIV_FETCH_PDF", "0") == "1"   # optional: fetch PDF fulltext
 ARXIV_DELAY     = float(os.getenv("ARXIV_DELAY", "0.35"))    # polite pacing (arXiv is stricter than NCBI)
@@ -123,7 +131,7 @@ def upsert_document(
     ext_id: str,
     title: Optional[str],
     source_uri: Optional[str],
-    author: Optional[str],
+    author: Optional[List[str]],
     year_date: Optional[date],
     institute: Optional[str],
     source: Optional[str],
@@ -150,9 +158,15 @@ def upsert_document(
     )
     return cur.fetchone()[0]
 
-def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, source_id: str):
+def upsert_chunks(cur, doc_id: int, chunks: List[Tuple[str, str]], embs, source_id: str):
+    """
+    Upsert chunks with section names.
+
+    Args:
+        chunks: List of (chunk_text, section_name) tuples
+    """
     rows = []
-    for idx, (txt, vec) in enumerate(zip(chunks, embs)):
+    for idx, ((txt, section_name), vec) in enumerate(zip(chunks, embs)):
         chash = hashlib.sha256(txt.encode("utf-8")).hexdigest()
         preview = txt[:500]
         meta = {
@@ -162,18 +176,20 @@ def upsert_chunks(cur, doc_id: int, chunks: List[str], embs, source_id: str):
             "chunk_tokens": CHUNK_TOKENS,
             "chunk_overlap": CHUNK_OVERLAP,
             "embedding_model": EMBED_MODEL,
+            "section_name": section_name,
         }
-        rows.append((doc_id, idx, json.dumps(meta, ensure_ascii=False), preview, chash, to_vec_lit(vec), EMBED_MODEL))
+        rows.append((doc_id, idx, json.dumps(meta, ensure_ascii=False), preview, chash, to_vec_lit(vec), EMBED_MODEL, section_name))
     cur.executemany(
         """
-        INSERT INTO chunks (doc_id, chunk_index, metadata, text, content_hash, embedding, embedding_model)
-        VALUES (%s, %s, %s, %s, %s, %s::vector, %s)
+        INSERT INTO chunks (doc_id, chunk_index, metadata, text, content_hash, embedding, embedding_model, section_name)
+        VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s)
         ON CONFLICT (doc_id, chunk_index) DO UPDATE SET
           metadata = EXCLUDED.metadata,
           text = EXCLUDED.text,
           content_hash = EXCLUDED.content_hash,
           embedding = EXCLUDED.embedding,
-          embedding_model = EXCLUDED.embedding_model;
+          embedding_model = EXCLUDED.embedding_model,
+          section_name = EXCLUDED.section_name;
         """,
         rows,
     )
@@ -272,14 +288,14 @@ def _entry_to_record(entry) -> Optional[Dict]:
     title = (entry.title.get_text(" ", strip=True) if entry.title else None)
     abstract = (entry.summary.get_text(" ", strip=True) if entry.summary else None)
 
-    # authors
+    # authors (deduplicate while preserving order)
     authors = []
     for a in entry.find_all("author"):
         name = a.find("name")
         if name:
             s = name.get_text(" ", strip=True)
             if s: authors.append(s)
-    author_str = "; ".join(dict.fromkeys(authors)) if authors else None
+    author_list = list(dict.fromkeys(authors)) if authors else None
 
     # published date
     pubd = (entry.published.get_text(strip=True) if entry.published else None)
@@ -311,7 +327,7 @@ def _entry_to_record(entry) -> Optional[Dict]:
         "arxiv_id": arxiv_id,
         "title": title,
         "abstract": abstract,
-        "authors": author_str,
+        "authors": author_list,
         "published": ydate,
         "abs_url": abs_url,
         "pdf_url": pdf_url,
@@ -470,9 +486,12 @@ async def fetch_pdf_text(pdf_url: str, arxiv_id: Optional[str] = None, search_qu
                 
             except Exception as e:
                 print(f"[error] Unexpected error fetching PDF (attempt {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}: {e}", flush=True)
-                
-        print(f"[error] Failed to fetch PDF after {MAX_RETRIES} attempts for {arxiv_id or pdf_url}", flush=True)
-        return ""
+
+        # All retries exhausted - raise exception to stop ingestion
+        topic_info = f" | Topic: {search_query}" if search_query else ""
+        error_msg = f"Failed to fetch PDF after {MAX_RETRIES} attempts for {arxiv_id or pdf_url}{topic_info}"
+        print(f"[error] {error_msg}", flush=True)
+        raise RuntimeError(error_msg)
 
 # ---------- Public ingest: one arXiv id ----------
 async def ingest_one_arxiv_id(arxiv_id: str, search_query: Optional[str] = None) -> int:
@@ -512,24 +531,32 @@ async def ingest_one_arxiv_id(arxiv_id: str, search_query: Optional[str] = None)
         print(f"[info] PDF fetching is DISABLED (set ARXIV_FETCH_PDF=1 to enable)", flush=True)
         body = body[:MAX_CHARS]
 
-    # Create chunks
-    raw_chunks = chunk_by_tokens(body, CHUNK_TOKENS, CHUNK_OVERLAP)
+    # Create chunks using section-aware chunking
+    print(f"🔹 Using section-aware chunking (preserves document structure)", flush=True)
+    raw_chunks = chunk_text_by_sections(body, max_tokens=CHUNK_TOKENS, overlap_tokens=CHUNK_OVERLAP, include_section_names=True)
+
     if MAX_CHUNKS and len(raw_chunks) > MAX_CHUNKS:
         print(f"[info] Limiting chunks from {len(raw_chunks)} to {MAX_CHUNKS}", flush=True)
         raw_chunks = raw_chunks[:MAX_CHUNKS]
-    
-    # Prepend arxiv_id to each chunk for context
-    chunks = [f"{arxiv_id}\n\n{c}" for c in (raw_chunks or [body])]
-    print(f"🔹 Created {len(chunks)} chunks", flush=True)
 
-    # Generate embeddings
+    # Prepend arxiv_id to each chunk for context (keep section names separate)
+    if raw_chunks:
+        chunks = [(f"arXiv:{arxiv_id}\n\n{chunk_text}", section_name) for chunk_text, section_name in raw_chunks]
+    else:
+        # Fallback if no chunks created
+        chunks = [(f"arXiv:{arxiv_id}\n\n{body}", "Document")]
+
+    print(f"🔹 Created {len(chunks)} section-aware chunks", flush=True)
+
+    # Generate embeddings (extract chunk texts from tuples)
     print(f"🔹 Encoding with {EMBED_MODEL} (batch={EMBED_BATCH})", flush=True)
     approx_tokens = len((body or "").split())
     print(f"🔹 Body: {len(body):,} chars, ~{approx_tokens} tokens, chunk_tokens={CHUNK_TOKENS}, overlap={CHUNK_OVERLAP}", flush=True)
-    
-    embs = encode_embeddings(chunks)
+
+    chunk_texts = [chunk_text for chunk_text, _ in chunks]
+    embs = encode_embeddings(chunk_texts)
     print(f"🔹 Embedding shape: {embs.shape} (dim={embs.shape[1]})", flush=True)
-    
+
     if embs.shape[0] != len(chunks):
         raise RuntimeError(f"Embedding count mismatch: got {embs.shape[0]} for {len(chunks)} chunks")
 
@@ -569,6 +596,37 @@ async def ingest_one_arxiv_id(arxiv_id: str, search_query: Optional[str] = None)
         upsert_chunks(cur, doc_id, chunks, embs, arxiv_id)
         con.commit()
         print(f"✅ Inserted {len(chunks)} chunks for arXiv:{arxiv_id}", flush=True)
+
+        # NER extraction (optional)
+        if ENABLE_NER:
+            print(f"🔹 Extracting named entities from chunks...", flush=True)
+            try:
+                # Extract mentions from chunks
+                mentions = extract_entities_from_chunks(chunks)
+                mentions = deduplicate_mentions(mentions)
+                print(f"🔹 Found {len(mentions)} unique mentions", flush=True)
+
+                if mentions:
+                    # Generate embeddings for mentions
+                    mention_embeddings = embed_mentions(mentions)
+                    print(f"🔹 Generated embeddings for {len(mention_embeddings)} mentions", flush=True)
+
+                    # Upsert mentions and embeddings
+                    num_inserted = upsert_mentions(cur, doc_id, mentions, mention_embeddings)
+                    con.commit()
+                    print(f"✅ Inserted {num_inserted} mentions for arXiv:{arxiv_id}", flush=True)
+
+                    # Print stats by label
+                    label_counts = {}
+                    for m in mentions:
+                        label = m['label']
+                        label_counts[label] = label_counts.get(label, 0) + 1
+                    print(f"   Mentions by type: {label_counts}", flush=True)
+                else:
+                    print(f"   No mentions extracted", flush=True)
+            except Exception as e:
+                print(f"⚠️ NER extraction failed: {e}", flush=True)
+                # Continue without NER - don't fail the ingestion
 
     print(f"✨ Done ingesting arXiv:{arxiv_id}", flush=True)
     await asyncio.sleep(ARXIV_DELAY)

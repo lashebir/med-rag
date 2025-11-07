@@ -16,62 +16,191 @@ RETMAX_PER_TOPIC = 20  # Adjust based on your needs
 
 # Define your research topics
 # These are examples - customize for your medical research focus
-ROUND_1_TOPICS = [
+# ROUND_1_TOPICS = [
+#     "cochlear synaptopathy",
+#     "noise-induced hearing loss",
+#     "tinnitus pathophysiology",
+#     "hidden hearing loss",
+#     "hair cell regeneration",
+# ]
+
+# ROUND_2_TOPICS = [
+#     "auditory brainstem response",
+#     "spiral ganglion neurons",
+#     "age-related hearing loss presbycusis",
+#     "ototoxicity mechanisms",
+#     "cochlear implant outcomes",
+# ]
+
+# ROUND_3_TOPICS = [
+#     # Cellular & Molecular
+#     "cochlear synaptic repair",
+#     "mitochondrial dysfunction hearing loss",
+#     "oxidative stress cochlea",
+#     "inflammatory cytokines inner ear",
+#     "epigenetic regulation auditory system",
+
+#     # Genetics & Regeneration
+#     "gene therapy hearing loss",
+#     "Atoh1 hair cell regeneration",
+#     "Notch signaling cochlea",
+#     "stem cell inner ear",
+#     "cochlear organoids",
+
+#     # Clinical & Translational
+#     "hidden hearing loss humans",
+#     "hearing loss cognitive decline",
+#     "audiological assessment synaptopathy",
+# ]
+
+# ROUND_4_TOPICS = [
+#     # Neuroscience & Computation
+#     "computational modeling auditory pathway",
+#     "neural encoding auditory cortex",
+#     "deep learning auditory neuroscience",
+#     "spiking neural networks hearing",
+#     "temporal coding auditory system",
+
+#     # Cognitive & Neurodegenerative
+#     "hearing loss Alzheimer's disease",
+#     "hearing loss Parkinson's disease",
+#     "auditory working memory aging",
+#     "default mode network auditory",
+
+#     # Neural Prosthetics
+#     "cochlear implant neural encoding",
+#     "auditory brainstem implant",
+#     "brain computer interface auditory",
+#     "EEG decoding speech perception",
+# ]
+
+ROUND_1 = [
     "cochlear synaptopathy",
     "noise-induced hearing loss",
     "tinnitus pathophysiology",
-    "hidden hearing loss",
+    "single-cell RNA-seq cochlea",
     "hair cell regeneration",
 ]
 
-ROUND_2_TOPICS = [
+ROUND_2 = [
+    "hidden hearing loss",
+    "hearing loss",
+    "tinnitus",
+    "otitis media",
+    "otitis externa",
+    "otitis media with effusion",
+    "otitis media with retraction",
     "auditory brainstem response",
     "spiral ganglion neurons",
-    "age-related hearing loss presbycusis",
-    "ototoxicity mechanisms",
-    "cochlear implant outcomes",
+    "age-related hearing loss",
+    "presbycusis",
+    "noise-induced hearing loss",  # keep once (de-duped below)
 ]
 
-ROUND_3_TOPICS = [
-    # Cellular & Molecular
-    "cochlear synaptic repair",
-    "mitochondrial dysfunction hearing loss",
-    "oxidative stress cochlea",
-    "inflammatory cytokines inner ear",
-    "epigenetic regulation auditory system",
+ROUND_3 = [
+    # --- Cellular & Molecular ---
+    "cochlear synaptic repair cochlea",
+    "synapse regeneration cochlea",
+    "mitochondrial dysfunction cochlea",
+    "oxidative stress hearing loss cochlea",
+    "apoptosis hair cell cochlea",
+    "inflammatory cytokines hearing loss",
+    "blood-labyrinth barrier inner ear permeability",
+    "epigenetic regulation cochlea",
+    "microRNA cochlea hearing loss",
 
-    # Genetics & Regeneration
-    "gene therapy hearing loss",
+    # --- Central Auditory & Plasticity ---
+    "auditory cortex plasticity hearing loss",
+    "cochlear nucleus synaptic transmission",
+    "inferior colliculus plasticity hearing loss",
+    "central auditory hyperactivity tinnitus",
+    "temporal processing hearing loss",
+    "speech in noise perception hidden hearing loss",
+
+    # --- Genetics & Regeneration ---
+    "gene therapy hearing loss cochlea",
     "Atoh1 hair cell regeneration",
-    "Notch signaling cochlea",
-    "stem cell inner ear",
-    "cochlear organoids",
+    "Notch signaling cochlear regeneration",
+    "Wnt signaling inner ear",
+    "stem cell otic progenitors",
+    "Lgr5 supporting cell cochlea",
+    "cochlear organoids inner ear organoids",
 
-    # Clinical & Translational
+    # --- Clinical & Translational ---
+    "cochlear implant outcomes speech perception",
+    "hearing aid auditory plasticity",
+    "ototoxicity aminoglycoside cisplatin",
+    "auditory neuropathy ABR",
     "hidden hearing loss humans",
     "hearing loss cognitive decline",
-    "audiological assessment synaptopathy",
+
+    # --- Methods & Models ---
+    "single-cell RNA-seq inner ear cochlea",
+    "spatial transcriptomics auditory",
+    "machine learning otology hearing loss",
+    "electrophysiology spiral ganglion",
+    "functional MRI auditory cortex",
+
+    # --- Aging & Environmental ---
+    "aging cochlea transcriptome",
+    "metabolic stress presbycusis",
+    "noise exposure cochlear synaptopathy",
+    "dietary antioxidant hearing loss",
 ]
 
-ROUND_4_TOPICS = [
-    # Neuroscience & Computation
+ROUND_4_8 = [
+    # --- Cognitive and Neurodegenerative ---
+    "hearing loss Alzheimer's disease",
+    "hearing loss Parkinson's disease",
+    "hearing loss cognitive load",
+    "auditory working memory aging",
+    "default mode network auditory",
+    "functional MRI auditory cognition",
+    "brainstem auditory pathway neurodegeneration",
+    "white matter microstructure auditory processing",
+
+    # --- Computational and Theoretical Neuroscience ---
     "computational modeling auditory pathway",
     "neural encoding auditory cortex",
     "deep learning auditory neuroscience",
     "spiking neural networks hearing",
     "temporal coding auditory system",
+    "information theory auditory",
+    "Bayesian models speech perception",
+    "predictive coding auditory cortex",
+    "neural decoding auditory evoked potentials",
+    "biophysical models hair cell",
 
-    # Cognitive & Neurodegenerative
-    "hearing loss Alzheimer's disease",
-    "hearing loss Parkinson's disease",
-    "auditory working memory aging",
-    "default mode network auditory",
+    # --- Neuroinflammation and Metabolism ---
+    "neuroinflammation auditory system",
+    "microglia auditory cortex",
+    "blood-brain barrier hearing loss",
+    "systemic inflammation hearing loss",
+    "metabolic syndrome hearing loss",
+    "vascular dysfunction cochlea",
+    "mitochondrial dynamics auditory neurons",
 
-    # Neural Prosthetics
+    # --- Neural Prosthetics and BCIs ---
     "cochlear implant neural encoding",
-    "auditory brainstem implant",
+    "cochlear implant brain plasticity",
+    "auditory brainstem implant speech perception",
+    "electrical stimulation auditory pathway",
+    "neuroprosthetics hearing restoration",
     "brain computer interface auditory",
     "EEG decoding speech perception",
+    "neural decoding speech intelligibility",
+    "MEG auditory attention decoding",
+    "auditory attention neural tracking",
+    "computational modeling auditory prosthesis",
+    "biophysical modeling auditory stimulation",
+    "neural interface temporal coding",
+    "deep learning auditory decoding",
+    "closed loop auditory feedback",
+    "machine learning cochlear implant outcomes",
+    "adaptive stimulation auditory implant",
+    "real time neural decoding auditory cortex",
+    "brain connectivity auditory prosthesis",
+    "BCI speech comprehension"
 ]
 
 def dedup_order(seq: List[str]) -> List[str]:
@@ -131,10 +260,10 @@ async def bulk_ingest_all():
 ╚═══════════════════════════════════════════════════════════════╝
 """)
 
-    await _run_round("Round 1: Core Topics", ROUND_1_TOPICS)
-    await _run_round("Round 2: Clinical Topics", ROUND_2_TOPICS)
-    await _run_round("Round 3: Molecular & Translational", ROUND_3_TOPICS)
-    await _run_round("Round 4: Neuroscience & AI", ROUND_4_TOPICS)
+    await _run_round("Round 1: Core Topics", ROUND_1)
+    await _run_round("Round 2: Clinical Topics", ROUND_2)
+    await _run_round("Round 3: Molecular & Translational", ROUND_3)
+    await _run_round("Round 4: Neuroscience & AI", ROUND_4_8)
 
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
@@ -152,7 +281,7 @@ async def main():
 
     # Count total topics
     all_topics = dedup_order(
-        ROUND_1_TOPICS + ROUND_2_TOPICS + ROUND_3_TOPICS + ROUND_4_TOPICS
+        ROUND_1 + ROUND_2 + ROUND_3 + ROUND_4_8
     )
     print(f"Total unique topics: {len(all_topics)}")
     print(f"Estimated max results: {len(all_topics) * RETMAX_PER_TOPIC}\n")
