@@ -12,6 +12,6 @@ In the final design, the system will first be prompted by the client to find rel
 
 * **PostgreSQL + pgvector** for semantic search and vector storage
 
-* **External APIs** (PubMed Central, arXiv, etc.) for document ingestion
+* **External APIs** (PubMed Central, arXiv, Google Scholar) for document ingestion
 
-* **LLM** integration for context-aware synthesis of retrieved results
+* **LLM** (Ollama) integration for context-aware synthesis of retrieved results

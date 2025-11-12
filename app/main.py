@@ -8,10 +8,10 @@ from psycopg import connect
 from psycopg.rows import dict_row
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
-from app.qa_endpoint import router as qa_router
+from app.llm_integration.qa_endpoint import router as qa_router
 
-from app.pmc_resolve import resolve_pmcid
-from app.pmc_ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
+from app.ingestion.PubMed_Central.pmc_resolve import resolve_pmcid
+from app.ingestion.PubMed_Central.pmc_fa_ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
 
 load_dotenv()
 app = FastAPI(title="Medical RAG")

@@ -4,7 +4,7 @@ from psycopg import connect
 from psycopg.rows import dict_row
 from bs4 import BeautifulSoup
 
-from app.doi_utils import extract_doi_from_bioc, extract_doi_from_nxml, extract_doi_from_arxiv_entry, normalize_arxiv_id
+from doi_utils import extract_doi_from_bioc, extract_doi_from_nxml, extract_doi_from_arxiv_entry, normalize_arxiv_id
 
 # ---- arXiv id ↔ DOI helpers ----
 ARXIV_VER_RE = re.compile(r"^arXiv:", re.IGNORECASE)
