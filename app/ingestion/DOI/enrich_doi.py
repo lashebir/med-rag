@@ -246,7 +246,7 @@ async def enrich_row(row, write_to_documents: bool, con):
         print(f"[err] doc_id={doc_id}: {type(e).__name__}: {e}")
 
 async def main():
-    limit = int(os.getenv("ENRICH_LIMIT", "500"))
+    limit = int(os.getenv("ENRICH_LIMIT", "1000"))
 
     with connect(**PG, row_factory=dict_row) as con:
         # Decide where to store DOIs

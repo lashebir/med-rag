@@ -15,3 +15,19 @@ In the final design, the system will first be prompted by the client to find rel
 * **External APIs** (PubMed Central, arXiv, Google Scholar) for document ingestion
 
 * **LLM** (Ollama) integration for context-aware synthesis of retrieved results
+
+## **Documentation:**
+
+### Search & Retrieval
+* [IVFFlat Tuning Guide](app/search_strategies/IVFFLAT_TUNING.md) - Vector index configuration and performance tuning
+* [Search Strategies Overview](app/search_strategies/SEARCH_STRATEGIES.md) - Comparison of 4 retrieval strategies
+* [Strategy 4 (Full Hybrid)](app/search_strategies/STRATEGY_4_SUMMARY.md) - IVFFlat + NER + tsvector implementation
+* [Embedding Superposition Analysis](app/search_strategies/IVFFlat_analysis/EMBEDDING_SUPERPOSITION_ANALYSIS.md) - Feature entanglement and disentanglement in vector space
+
+### A/B Testing & Evaluation
+* [A/B Testing Guide](app/AB_TESTING_GUIDE.md) - Production testing framework for comparing search strategies
+* [Benchmarking Script](app/search_strategies/benchmark_search_strategies.py) - Offline performance evaluation
+
+### Data Ingestion & Enrichment
+* [Auto DOI Enrichment](app/ingestion/DOI/AUTO_DOI_ENRICHMENT.md) - Automatic DOI extraction for newly ingested documents
+* [NER Backfill Script](app/ingestion/NER/backfill_ner.py) - Entity extraction for existing documents

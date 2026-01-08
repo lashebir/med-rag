@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from app.pmc_fa_ingest import ingest_one_pmcid, PG_KWARGS, needs_update, log_skip_reason
 import os, argparse, asyncio, random, sys
 from typing import List
+from app.ingestion.DOI.doi_enrichment_utils import get_max_doc_id, auto_enrich_dois_after_ingestion
 
 load_dotenv()
 
@@ -399,6 +400,10 @@ async def main():
 
     args = parser.parse_args()
 
+    # Capture max doc_id before ingestion
+    max_doc_id_before = get_max_doc_id()
+    print(f"\n📊 Starting ingestion (current max doc_id: {max_doc_id_before or 'none'})\n")
+
     # ---- Mode: explicit PMCIDs (either --pmc or --from-file) ----
     if args.pmc or args.from_file:
         pmcs: List[str] = []
@@ -407,10 +412,16 @@ async def main():
         if args.from_file:
             with open(args.from_file) as fh:
                 pmcs.extend([ln.strip() for ln in fh if ln.strip()])
-        # normalize to “PMCxxxxxx”
+        # normalize to "PMCxxxxxx"
         pmcs = [p if p.upper().startswith("PMC") else f"PMC{p}" for p in pmcs]
         print(f"[bulk] ingesting {len(pmcs)} PMCIDs with concurrency={args.concurrency}")
         await ingest_many(pmcs, concurrency=args.concurrency)
+
+        # Run DOI enrichment
+        print("\n" + "=" * 70)
+        print("🎯 INGESTION COMPLETE - Running DOI enrichment...")
+        print("=" * 70)
+        await auto_enrich_dois_after_ingestion(max_doc_id_before, source_name="PMC documents")
         return
 
     # ---- Default/Topic mode ----
@@ -429,6 +440,12 @@ async def main():
         for k in grand:
             grand[k] += summary.get(k, 0)
     print(f"\n[grand total] {grand}", flush=True)
+
+    # Run DOI enrichment for newly ingested documents
+    print("\n" + "=" * 70)
+    print("🎯 INGESTION COMPLETE - Running DOI enrichment...")
+    print("=" * 70)
+    await auto_enrich_dois_after_ingestion(max_doc_id_before, source_name="PMC documents")
 
 if __name__ == "__main__":
     try:

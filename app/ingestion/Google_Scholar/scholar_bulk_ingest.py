@@ -7,6 +7,7 @@ import os, sys, asyncio, random
 from typing import List, Dict
 
 from app.scholar_ingest import ingest_scholar_topic
+from app.ingestion.DOI.doi_enrichment_utils import get_max_doc_id, auto_enrich_dois_after_ingestion
 
 SCHOLAR_DELAY = float(os.getenv("SCHOLAR_DELAY", "1.0"))
 MAX_TOPIC_CONCURRENCY = 2  # How many topics at once
@@ -260,6 +261,10 @@ async def bulk_ingest_all():
 ╚═══════════════════════════════════════════════════════════════╝
 """)
 
+    # Capture max doc_id before ingestion
+    max_doc_id_before = get_max_doc_id()
+    print(f"\n📊 Starting ingestion (current max doc_id: {max_doc_id_before or 'none'})\n")
+
     await _run_round("Round 1: Core Topics", ROUND_1)
     await _run_round("Round 2: Clinical Topics", ROUND_2)
     await _run_round("Round 3: Molecular & Translational", ROUND_3)
@@ -270,6 +275,12 @@ async def bulk_ingest_all():
 ║  Bulk ingestion complete!                                      ║
 ╚═══════════════════════════════════════════════════════════════╝
 """)
+
+    # Run DOI enrichment for newly ingested documents
+    print("\n" + "=" * 70)
+    print("🎯 INGESTION COMPLETE - Running DOI enrichment...")
+    print("=" * 70)
+    await auto_enrich_dois_after_ingestion(max_doc_id_before, source_name="Scholar documents")
 
 async def main():
     """Main entry point."""

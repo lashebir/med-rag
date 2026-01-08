@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/leahashebir/Documents/med-rag/app/search_strategies/benchmark_search_strategies.py", line 39, in <module>
+    from search_types.search_strategies import (
+ModuleNotFoundError: No module named 'search_types'

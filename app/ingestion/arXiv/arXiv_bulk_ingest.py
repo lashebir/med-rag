@@ -3,6 +3,7 @@ from typing import List, Dict
 
 # from app.arXiv_ingest import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
 from app.arXiv_fa_ingest_fixed import ingest_arxiv_topic, arxiv_query, ingest_one_arxiv_id, _norm_arxiv_id, _entry_to_record
+from app.ingestion.DOI.doi_enrichment_utils import get_max_doc_id, auto_enrich_dois_after_ingestion
 
 ARXIV_DELAY = float(os.getenv("ARXIV_DELAY", "0.25"))
 MAX_RESULTS = int(os.getenv("ARXIV_MAX_RESULTS", "100"))
@@ -270,10 +271,20 @@ async def _run_round(name: str, topics: List[str]):
     await asyncio.sleep(random.uniform(*PAUSE_BETWEEN_ROUNDS))
 
 async def polite_ingest_arxiv_all():
+    # Capture max doc_id before ingestion
+    max_doc_id_before = get_max_doc_id()
+    print(f"\n📊 Starting ingestion (current max doc_id: {max_doc_id_before or 'none'})\n")
+
     await _run_round("Round 1", ROUND_1)
     await _run_round("Round 2", ROUND_2)
     await _run_round("Round 3 (biomed queries normalized for arXiv)", ROUND_3)
     await _run_round("Rounds 4-8", ROUND_4_8)
+
+    # Run DOI enrichment for newly ingested documents
+    print("\n" + "=" * 70)
+    print("🎯 INGESTION COMPLETE - Running DOI enrichment...")
+    print("=" * 70)
+    await auto_enrich_dois_after_ingestion(max_doc_id_before, source_name="arXiv documents")
 
 async def main():
     p = argparse.ArgumentParser("Bulk arXiv ingestion")
@@ -285,8 +296,14 @@ async def main():
     p.add_argument("--page-size", type=int, default=100)
     args = p.parse_args()
 
+    # Capture max doc_id before ingestion
+    max_doc_id_before = get_max_doc_id()
+    print(f"\n📊 Starting ingestion (current max doc_id: {max_doc_id_before or 'none'})\n")
+
     if args.query:
         await ingest_query(args.query, limit=args.limit, page_size=args.page_size)
+        # Run DOI enrichment
+        await auto_enrich_dois_after_ingestion(max_doc_id_before, source_name="arXiv documents")
         return
 
     ids: List[str] = []
@@ -307,6 +324,12 @@ async def main():
                 print(f"[arXiv] FAIL {aid}: {type(e).__name__}: {e}")
 
     await asyncio.gather(*(worker(a) for a in ids))
+
+    # Run DOI enrichment for newly ingested documents
+    print("\n" + "=" * 70)
+    print("🎯 INGESTION COMPLETE - Running DOI enrichment...")
+    print("=" * 70)
+    await auto_enrich_dois_after_ingestion(max_doc_id_before, source_name="arXiv documents")
 
 if __name__ == "__main__":
     asyncio.run(polite_ingest_arxiv_all())

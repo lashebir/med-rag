@@ -9,9 +9,16 @@ from psycopg.rows import dict_row
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 from app.llm_integration.qa_endpoint import router as qa_router
+from app.search_strategies.search_strategies import (
+    retrieve_ivfflat_only,
+    retrieve_ivfflat_ner_boost,
+    retrieve_ivfflat_tsvector,
+    retrieve_ivfflat_ner_tsvector,
+)
 
-from app.ingestion.PubMed_Central.pmc_resolve import resolve_pmcid
-from app.ingestion.PubMed_Central.pmc_fa_ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
+# PMC ingestion imports (comment out if not using ingestion endpoints)
+# from app.ingestion.PubMed_Central.pmc_resolve import resolve_pmcid
+# from app.ingestion.PubMed_Central.pmc_fa_ingest import ingest_one_pmcid, embedder, to_vec_lit, PG_KWARGS
 
 load_dotenv()
 app = FastAPI(title="Medical RAG")
@@ -21,16 +28,12 @@ templates = Jinja2Templates(directory="app/templates")
 
 class QueryRequest(BaseModel):
     question: str
+    strategy: str = "ivfflat_only"  # ivfflat_only, ner_boost, tsvector, full_hybrid
+    k: int = 10
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
-
-@app.post("/query")
-def query(req: QueryRequest):
-    # Replace with your real RAG logic later
-    answer = f"(demo) You asked: {req.question}"
-    return {"answer": answer, "citations": []}
 
 class SearchBody(BaseModel):
     query: str
@@ -71,46 +74,36 @@ async def ingest_search(body: SearchBody):
             results.append({"pmcid": pmcid, "error": str(e)})
     return {"query": body.query, "ingested": results}
 
-class QueryBody(BaseModel):
-    question: str
-    k: int = 6
-    hydrate: bool = False   # if True, re-fetch full text for top-K (optional)
-
 @app.post("/query")
-def query(body: QueryBody):
-    # 1) embed question
-    emb: SentenceTransformer = embedder()
-    qvec = emb.encode([body.question], normalize_embeddings=True)[0]
-    lit = to_vec_lit(qvec)
+def query(req: QueryRequest):
+    """
+    Enhanced query endpoint with strategy selection and keyword highlighting support.
 
-    # 2) vector search
-    with connect(**PG_KWARGS, row_factory=dict_row) as con, con.cursor() as cur:
-        cur.execute("""
-            SELECT c.chunk_id, c.text, c.metadata, d.title, d.source_uri,
-                   1 - (c.embedding <=> %s::vector) AS similarity
-            FROM chunks c JOIN documents d ON d.doc_id = c.doc_id
-            ORDER BY c.embedding <-> %s::vector
-            LIMIT %s;
-        """, (lit, lit, body.k))
-        hits = cur.fetchall()
+    Strategies:
+    - ivfflat_only: Pure vector similarity (baseline)
+    - ner_boost: Vector + NER entity boost
+    - tsvector: Vector + full-text keyword search
+    - full_hybrid: Vector + NER + full-text (all signals)
+    """
+    try:
+        # Route to appropriate search strategy
+        if req.strategy == "ner_boost":
+            results = retrieve_ivfflat_ner_boost(req.question, k=req.k)
+        elif req.strategy == "tsvector":
+            results = retrieve_ivfflat_tsvector(req.question, k=req.k)
+        elif req.strategy == "full_hybrid":
+            results = retrieve_ivfflat_ner_tsvector(req.question, k=req.k)
+        else:  # ivfflat_only (default)
+            results = retrieve_ivfflat_only(req.question, k=req.k)
 
-    # 3) optional rehydration (fetch full BioC and reconstruct the exact chunk)
-    #    Keeping it minimal here; you can add a helper that re-fetches PMC then re-chunks
-    #    to extract the full chunk text for each (pmcid, chunk_index).
-    results = []
-    for h in hits:
-        meta = h["metadata"] or {}
-        results.append({
-            "chunk_id": h["chunk_id"],
-            "pmcid": meta.get("pmcid"),
-            "chunk_index": meta.get("chunk_index"),
-            "preview": h["text"],
-            "similarity": float(h["similarity"]),
-            "source": h["source_uri"],
-        })
-
-    # 4) (Your LLM call would go here, using the previews or hydrated chunks)
-    return {"question": body.question, "results": results}
+        return {
+            "question": req.question,
+            "strategy": req.strategy,
+            "results": results,
+            "count": len(results)
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Search failed: {str(e)}")
 
 @app.get("/ingest/pmcid/dryrun")
 async def ingest_pmcid_dryrun(pmcid: str):

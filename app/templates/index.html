@@ -3,33 +3,483 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ask the RAG</title>
+  <title>Medical RAG - Search Interface</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 3rem auto; }
-    textarea, button { width: 100%; font-size: 1rem; padding: 0.5rem; }
-    button { margin-top: 0.5rem; }
-    #answer { white-space: pre-wrap; background:#f4f4f4; padding:1rem; margin-top:1rem; border-radius:8px;}
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+    }
+
+    .container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+      padding: 2rem;
+    }
+
+    h1 {
+      color: #2d3748;
+      margin-bottom: 0.5rem;
+      font-size: 2rem;
+    }
+
+    .subtitle {
+      color: #718096;
+      margin-bottom: 2rem;
+      font-size: 0.95rem;
+    }
+
+    .search-box {
+      background: #f7fafc;
+      border: 2px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      color: #4a5568;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+
+    textarea {
+      width: 100%;
+      padding: 0.75rem;
+      border: 2px solid #cbd5e0;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-family: inherit;
+      resize: vertical;
+      transition: border-color 0.2s;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 2fr 1fr auto;
+      gap: 1rem;
+      align-items: end;
+    }
+
+    select, input[type="number"] {
+      width: 100%;
+      padding: 0.75rem;
+      border: 2px solid #cbd5e0;
+      border-radius: 8px;
+      font-size: 1rem;
+      background: white;
+      transition: border-color 0.2s;
+    }
+
+    select:focus, input[type="number"]:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 0.75rem 2rem;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      background: #cbd5e0;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 3rem;
+      color: #718096;
+    }
+
+    .spinner {
+      border: 3px solid #e2e8f0;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .results {
+      margin-top: 2rem;
+    }
+
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 2px solid #e2e8f0;
+    }
+
+    .results-header h2 {
+      color: #2d3748;
+      font-size: 1.5rem;
+    }
+
+    .results-count {
+      background: #667eea;
+      color: white;
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .result-card {
+      background: #f7fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .result-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      margin-bottom: 1rem;
+    }
+
+    .result-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #2d3748;
+      margin-bottom: 0.5rem;
+    }
+
+    .result-metadata {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+    }
+
+    .metadata-item {
+      background: white;
+      padding: 0.25rem 0.75rem;
+      border-radius: 6px;
+      color: #4a5568;
+      border: 1px solid #e2e8f0;
+    }
+
+    .metadata-item strong {
+      color: #2d3748;
+      margin-right: 0.25rem;
+    }
+
+    .score-badge {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .result-text {
+      background: white;
+      padding: 1rem;
+      border-radius: 8px;
+      line-height: 1.6;
+      color: #2d3748;
+      border-left: 4px solid #667eea;
+    }
+
+    .highlight {
+      background: linear-gradient(120deg, #f6e05e 0%, #fbd38d 100%);
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      font-weight: 600;
+      color: #744210;
+    }
+
+    .entity-badge {
+      display: inline-block;
+      background: #e6fffa;
+      color: #047857;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-left: 0.25rem;
+      text-transform: uppercase;
+    }
+
+    .no-results {
+      text-align: center;
+      padding: 3rem;
+      color: #718096;
+    }
+
+    .strategy-info {
+      background: #edf2f7;
+      border-left: 4px solid #667eea;
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 1.5rem;
+      font-size: 0.9rem;
+      color: #4a5568;
+    }
+
+    @media (max-width: 768px) {
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      body {
+        padding: 1rem;
+      }
+
+      .result-header {
+        flex-direction: column;
+      }
+
+      .score-badge {
+        margin-top: 0.5rem;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>Ask the RAG</h1>
-  <textarea id="question" rows="4" placeholder="Type your question..."></textarea>
-  <button onclick="ask()">Ask</button>
-  <div id="answer"></div>
+  <div class="container">
+    <h1>🔬 Medical RAG Search</h1>
+    <p class="subtitle">Search medical literature using advanced retrieval strategies</p>
+
+    <div class="search-box">
+      <div class="form-group">
+        <label for="question">Your Question</label>
+        <textarea
+          id="question"
+          rows="3"
+          placeholder="e.g., What are the side effects of metformin in diabetic patients?"
+        ></textarea>
+      </div>
+
+      <div class="controls">
+        <div class="form-group">
+          <label for="strategy">Search Strategy</label>
+          <select id="strategy">
+            <option value="ivfflat_only">IVFFlat Only (Pure Vector Similarity)</option>
+            <option value="ner_boost">IVFFlat + NER Boost (Entity-Aware)</option>
+            <option value="tsvector">IVFFlat + tsvector (Hybrid Keywords)</option>
+            <option value="full_hybrid" selected>Full Hybrid (All Signals)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="top_k">Results</label>
+          <input type="number" id="top_k" value="10" min="1" max="50" />
+        </div>
+
+        <button onclick="search()" id="searchBtn">Search</button>
+      </div>
+    </div>
+
+    <div id="strategyInfo" class="strategy-info" style="display: none;"></div>
+    <div id="results"></div>
+  </div>
 
   <script>
-    async function ask() {
-      const question = document.getElementById("question").value.trim();
-      if (!question) return;
-      document.getElementById("answer").innerText = "Thinking...";
-      const res = await fetch("/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question })
-      });
-      const data = await res.json();
-      document.getElementById("answer").innerText = data.answer || "(no answer)";
+    const strategyDescriptions = {
+      'ivfflat_only': 'Pure semantic similarity using sentence embeddings. Best for conceptual queries.',
+      'ner_boost': 'Semantic search with soft boost for chunks containing medical entities (drugs, diseases, devices).',
+      'tsvector': 'Hybrid search combining vector similarity and full-text keyword matching.',
+      'full_hybrid': 'Combines all three signals: semantic similarity + entity mentions + keyword matching for maximum precision.'
+    };
+
+    // Update strategy info when selection changes
+    document.getElementById('strategy').addEventListener('change', (e) => {
+      const info = document.getElementById('strategyInfo');
+      info.textContent = '📊 ' + strategyDescriptions[e.target.value];
+      info.style.display = 'block';
+    });
+
+    // Trigger initial strategy info display
+    document.getElementById('strategy').dispatchEvent(new Event('change'));
+
+    async function search() {
+      const question = document.getElementById('question').value.trim();
+      if (!question) {
+        alert('Please enter a question');
+        return;
+      }
+
+      const strategy = document.getElementById('strategy').value;
+      const k = parseInt(document.getElementById('top_k').value);
+      const resultsDiv = document.getElementById('results');
+      const searchBtn = document.getElementById('searchBtn');
+
+      // Show loading state
+      searchBtn.disabled = true;
+      searchBtn.textContent = 'Searching...';
+      resultsDiv.innerHTML = `
+        <div class="loading">
+          <div class="spinner"></div>
+          <p>Searching medical literature...</p>
+        </div>
+      `;
+
+      try {
+        const res = await fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, strategy, k })
+        });
+
+        if (!res.ok) {
+          throw new Error(`Search failed: ${res.statusText}`);
+        }
+
+        const data = await res.json();
+        displayResults(data);
+      } catch (error) {
+        resultsDiv.innerHTML = `
+          <div class="no-results">
+            <h3>❌ Error</h3>
+            <p>${error.message}</p>
+          </div>
+        `;
+      } finally {
+        searchBtn.disabled = false;
+        searchBtn.textContent = 'Search';
+      }
     }
+
+    function highlightKeywords(text, question) {
+      // Extract keywords from question (remove common words)
+      const stopWords = new Set(['what', 'are', 'the', 'is', 'in', 'of', 'and', 'or', 'for', 'with', 'to', 'a', 'an']);
+      const keywords = question.toLowerCase()
+        .split(/\s+/)
+        .filter(word => word.length > 3 && !stopWords.has(word))
+        .map(word => word.replace(/[^\w]/g, ''));
+
+      let highlighted = text;
+      keywords.forEach(keyword => {
+        const regex = new RegExp(`\\b(${keyword}\\w*)\\b`, 'gi');
+        highlighted = highlighted.replace(regex, '<span class="highlight">$1</span>');
+      });
+
+      return highlighted;
+    }
+
+    function displayResults(data) {
+      const resultsDiv = document.getElementById('results');
+
+      if (!data.results || data.results.length === 0) {
+        resultsDiv.innerHTML = `
+          <div class="no-results">
+            <h3>No results found</h3>
+            <p>Try adjusting your search terms or strategy</p>
+          </div>
+        `;
+        return;
+      }
+
+      let html = `
+        <div class="results-header">
+          <h2>Search Results</h2>
+          <span class="results-count">${data.count} results</span>
+        </div>
+      `;
+
+      data.results.forEach((result, idx) => {
+        const highlightedText = highlightKeywords(result.text, data.question);
+        const score = (result.final_score || result.similarity || 0).toFixed(3);
+
+        // Extract metadata
+        const pmcid = result.pmcid || 'Unknown';
+        const year = result.year || 'N/A';
+        const authors = result.authors ? (Array.isArray(result.authors) ? result.authors.join(', ') : result.authors) : 'Unknown';
+
+        // Entity types (if available from NER strategies)
+        const entityBadges = result.entity_types && result.entity_types.length > 0
+          ? result.entity_types.map(type => `<span class="entity-badge">${type}</span>`).join('')
+          : '';
+
+        html += `
+          <div class="result-card">
+            <div class="result-header">
+              <div>
+                <div class="result-title">${idx + 1}. ${result.title || 'Untitled Document'}</div>
+                <div class="result-metadata">
+                  <span class="metadata-item"><strong>ID:</strong> ${pmcid}</span>
+                  <span class="metadata-item"><strong>Year:</strong> ${year}</span>
+                  ${result.chunk_index !== undefined ? `<span class="metadata-item"><strong>Chunk:</strong> ${result.chunk_index}</span>` : ''}
+                  ${result.ner_mention_count !== undefined ? `<span class="metadata-item"><strong>Entities:</strong> ${result.ner_mention_count} ${entityBadges}</span>` : ''}
+                </div>
+              </div>
+              <div class="score-badge">Score: ${score}</div>
+            </div>
+            <div class="result-text">${highlightedText}</div>
+          </div>
+        `;
+      });
+
+      resultsDiv.innerHTML = html;
+    }
+
+    // Allow Enter key to submit (with Shift+Enter for new line)
+    document.getElementById('question').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        search();
+      }
+    });
   </script>
 </body>
 </html>
